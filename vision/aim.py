@@ -378,6 +378,8 @@ def main(argv=None) -> int:
     parser.add_argument("--cursor-source", choices=("auto", "http", "vision"), default="auto",
                         help="http = posicao publicada pelo trainer; vision = cruz ciana")
     parser.add_argument("--cursor-port", type=int, default=8765)
+    parser.add_argument("--stats-ms", type=int, default=250,
+                        help="intervalo das linhas de estatistica (1s esconde a convergencia)")
     parser.add_argument("--probe-axes", action="store_true",
                         help="mede cada eixo e cada sentido, imprime e sai")
     parser.add_argument("--no-calibrate", action="store_true",
@@ -561,14 +563,15 @@ def main(argv=None) -> int:
                 if cv2.waitKey(1) & 0xFF == 27:
                     raise KeyboardInterrupt
 
-            if now - last_stats >= 1.0:
+            if now - last_stats >= args.stats_ms / 1000.0:
                 err = servo.error
+                err_px = (int(err[0] / (protocol.MAX_COORD / args.width)),
+                          int(err[1] / (protocol.MAX_COORD / args.height))) if err else None
                 print(
-                    f"frames {frames:5d}  alvo {'-' if target is None else 'ok'}  "
-                    f"cursor {'-' if cursor is None else 'ok'}  "
-                    f"erro {('-' if err is None else f'{err[0]:+.0f},{err[1]:+.0f}')}  "
-                    f"k {servo.kx:5.1f}/{servo.ky:5.1f}  passo {step if step else '-'}"
-                    f"  cruz {('-' if cursor is None else f'{cursor[0]},{cursor[1]}')}",
+                    f"erro {('-' if err is None else f'{err_px[0]:+5d},{err_px[1]:+5d}px')}  "
+                    f"passo {str(step) if step else '-':>12s}  "
+                    f"cruz {('-' if cursor is None else f'{int(cursor[0]*args.width/protocol.MAX_COORD)},{int(cursor[1]*args.height/protocol.MAX_COORD)}')}"
+                    f"  k {servo.kx:4.1f}/{servo.ky:4.1f}",
                     file=sys.stderr, flush=True,
                 )
                 last_stats = now
