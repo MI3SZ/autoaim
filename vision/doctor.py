@@ -176,6 +176,8 @@ def main(argv=None) -> int:
     parser.add_argument("--host", default="172.16.42.1")
     parser.add_argument("--port", type=int, default=5555)
     parser.add_argument("--quick", action="store_true", help="pula os testes de linearidade e borda")
+    parser.add_argument("--dump", default="", metavar="DIR",
+                        help="salva frames em disco para inspecao visual")
     args = parser.parse_args(argv)
 
     report = Report()
@@ -232,6 +234,13 @@ def main(argv=None) -> int:
     cursor = vision.cursor_px()
     if cursor:
         report.ok("cursor (bola branca) achado", f"{int(cursor[0])},{int(cursor[1])}")
+        if args.dump:
+            os.makedirs(args.dump, exist_ok=True)
+            image = vision.frame()
+            if image is not None:
+                path = os.path.join(args.dump, "inicial.png")
+                cv2.imwrite(path, image)
+                print(f"      frame salvo: {path}")
     else:
         report.fail("cursor NAO achado", "o trainer desenhou a bola? esta com foco?")
         vision.close()
@@ -251,9 +260,18 @@ def main(argv=None) -> int:
 
     # ---- 4b. congelamento de verdade: a imagem muda quando algo muda? -----
     before_frame = vision.frame()
+    if args.dump:
+        os.makedirs(args.dump, exist_ok=True)
+        path = os.path.join(args.dump, "antes.png")
+        cv2.imwrite(path, before_frame)
+        print(f"      frame salvo: {path}")
     sender.delta(-120, 0)
     time.sleep(0.25)
     after_frame = vision.frame()
+    if args.dump and after_frame is not None:
+        path = os.path.join(args.dump, "depois.png")
+        cv2.imwrite(path, after_frame)
+        print(f"      frame salvo: {path}")
     if before_frame is not None and after_frame is not None:
         if np.array_equal(before_frame, after_frame):
             report.fail("captura: NAO acompanha o movimento",
