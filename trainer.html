@@ -432,7 +432,9 @@ addEventListener('mousemove', e => {
 // Publica tambem periodicamente: com o cursor parado nao existe mousemove, e o
 // aim.py descarta posicao com mais de 300ms - o laco morria por falta de noticia,
 // nao por falta de movimento.
-setInterval(publishPointer, 100);
+// 30ms e nao 100ms: a publicacao e a maior fonte de latencia do laco, e a
+// latencia define o ganho estavel (periodo de oscilacao ~ 2x o atraso).
+setInterval(publishPointer, 30);
 
 addEventListener('mousedown', e => {
   pointer.x = e.clientX; pointer.y = e.clientY; pointer.seen = true;

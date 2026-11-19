@@ -197,7 +197,7 @@ class Servo:
     isso e o que impede o laco de ficar lento ou de dar tranco.
     """
 
-    def __init__(self, gain: float = 0.25, deadband: float = 30.0, max_step: float = 300.0):
+    def __init__(self, gain: float = 0.12, deadband: float = 30.0, max_step: float = 300.0):
         self.gain = gain
         self.deadband = deadband
         self.max_x = max_step
@@ -366,12 +366,13 @@ def main(argv=None) -> int:
     parser.add_argument("--host", default="172.16.42.1")
     parser.add_argument("--port", type=int, default=5555)
     parser.add_argument("--hz", type=float, default=30.0)
-    parser.add_argument("--gain", type=float, default=0.25,
-                        help="fracao do erro por frame; acima de ~0.3 bate lata com a latencia")
+    parser.add_argument("--gain", type=float, default=0.12,
+                        help="fracao do erro por frame. Limite estavel ~ 1/(latencia em frames); "
+                             "com ~250ms de atraso isso da 0.12")
     parser.add_argument("--deadband", type=float, default=30.0, help="unidades de tela (~2px)")
     parser.add_argument("--max-step", type=float, default=0.0,
                         help="teto em contagens por frame (0 = calcula pela velocidade alvo)")
-    parser.add_argument("--max-px-frame", type=float, default=40.0,
+    parser.add_argument("--max-px-frame", type=float, default=30.0,
                         help="velocidade alvo do cursor, em px por frame")
     parser.add_argument("--duration", type=float, default=0.0)
     parser.add_argument("--preview", action="store_true")
