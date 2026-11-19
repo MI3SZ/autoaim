@@ -480,6 +480,7 @@ def main(argv=None) -> int:
             frames += 1
 
             target = target_finder.find(image)
+            step = None
 
             cursor = None
             if cursor_server is not None:
@@ -512,9 +513,13 @@ def main(argv=None) -> int:
             # A posicao publicada congela quando o ponteiro sai da janela do
             # trainer (outra janela por cima). Sem isso o laco empurra as cegas.
             if cursor is not None:
-                if frozen_seen is not None and cursor == frozen_seen:
+                # So conta congelamento quando NOS mandamos movimento: cursor
+                # parado no alvo dentro do deadband e o caso normal, e contava
+                # como falha (desligava a medicao sem motivo).
+                commanding = step is not None and step != (0, 0)
+                if frozen_seen is not None and cursor == frozen_seen and commanding:
                     frozen_count += 1
-                else:
+                elif cursor != frozen_seen:
                     frozen_count = 0
                     frozen_seen = cursor
                     frozen_warned = False
@@ -544,7 +549,6 @@ def main(argv=None) -> int:
                     print("aviso: alvo ausente ha 30 frames (janela coberta?)", file=sys.stderr)
                     warned = True
                 sender.park()
-                step = None
             else:
                 targetless = 0
                 warned = False
