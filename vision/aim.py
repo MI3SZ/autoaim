@@ -384,6 +384,8 @@ def main(argv=None) -> int:
     parser.add_argument("--cursor-port", type=int, default=8765)
     parser.add_argument("--stats-ms", type=int, default=250,
                         help="intervalo das linhas de estatistica (1s esconde a convergencia)")
+    parser.add_argument("--quiet-capture", action="store_true",
+                        help="nao avisa sobre captura congelada")
     parser.add_argument("--probe-axes", action="store_true",
                         help="mede cada eixo e cada sentido, imprime e sai")
     parser.add_argument("--no-calibrate", action="store_true",
@@ -476,6 +478,8 @@ def main(argv=None) -> int:
     frames = targetless = cursorless = 0
     last_cursor = None
     prev_sample = None   # (tempo, cursor) para medir velocidade real
+    prev_frame_key = None
+    frame_frozen = 0
     frozen_seen = None
     frozen_count = 0
     frozen_warned = False
@@ -497,6 +501,21 @@ def main(argv=None) -> int:
                 time.sleep(period)
                 continue
             frames += 1
+
+            # Detecta captura congelada: o v4l2loopback repete o ultimo frame
+            # quando o OBS para de renderizar (janela coberta, no Wayland). Sem
+            # isso, alvo e cursor ficam parados e parece problema de mouse.
+            key = int(image[::64, ::64].sum())
+            if key == prev_frame_key:
+                frame_frozen += 1
+                if frame_frozen == 30 and not args.quiet_capture:
+                    print("aviso: a CAPTURA esta congelada (30 frames identicos). "
+                          "No Wayland o OBS para de capturar quando a janela fica "
+                          "coberta: deixe o OBS visivel (uma faixa pequena) e o "
+                          "trainer em janela, nao em tela cheia.", file=sys.stderr)
+            else:
+                frame_frozen = 0
+                prev_frame_key = key
 
             target = target_finder.find(image)
             step = None
