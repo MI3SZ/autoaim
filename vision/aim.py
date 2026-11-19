@@ -200,8 +200,13 @@ class Servo:
     def __init__(self, gain: float = 0.25, deadband: float = 30.0, max_step: float = 300.0):
         self.gain = gain
         self.deadband = deadband
-        self.max_step = max_step
-        self.k = 1.0
+        self.max_x = max_step
+        self.max_y = max_step
+        # Sensibilidade POR EIXO: medido no hardware, y anda 1.78x mais que x
+        # (exatamente a proporcao 1920/1080). Um k unico deixava x mandando
+        # 1.4x a menos e y 1.4x a mais.
+        self.kx = 1.0
+        self.ky = 1.0
         self.error = None
         self._sent = None
         self._cursor_at_send = None
@@ -217,12 +222,14 @@ class Servo:
         # relevante e movimento NO MESMO SENTIDO: sem isso um palpite de deteccao
         # faz k divergir (ja aconteceu de ir de 1.0 a 8.0 em dois segundos).
         if self._sent is not None and self._cursor_at_send is not None and self.adapt:
-            asked = self._sent[0]
-            moved = cursor[0] - self._cursor_at_send[0]
-            if abs(asked) >= 40 and moved * asked > 0:
-                observed = abs(moved / asked)
-                if 0.005 < observed < 50.0:
-                    self.k += 0.25 * (observed - self.k)
+            for axis_index, attribute in ((0, "kx"), (1, "ky")):
+                asked = self._sent[axis_index]
+                moved = cursor[axis_index] - self._cursor_at_send[axis_index]
+                if abs(asked) >= 40 and moved * asked > 0:
+                    observed = abs(moved / asked)
+                    if 0.005 < observed < 50.0:
+                        current = getattr(self, attribute)
+                        setattr(self, attribute, current + 0.25 * (observed - current))
 
         ex = target[0] - cursor[0]
         ey = target[1] - cursor[1]
@@ -232,9 +239,8 @@ class Servo:
             self._sent = None
             return None
 
-        scale = 1.0 / max(0.005, min(50.0, self.k))
-        ux = max(-self.max_step, min(self.max_step, self.gain * ex * scale))
-        uy = max(-self.max_step, min(self.max_step, self.gain * ey * scale))
+        ux = max(-self.max_x, min(self.max_x, self.gain * ex / max(0.005, self.kx)))
+        uy = max(-self.max_y, min(self.max_y, self.gain * ey / max(0.005, self.ky)))
         step = (int(round(ux)), int(round(uy)))
         if step == (0, 0):
             return None
@@ -328,9 +334,9 @@ def calibrate_k(sender, measure, hz: float = 30.0, step: int = 150):
             ratios.append(moved / step)
         position = latest
 
-    if not ratios:
+    if len(ratios) < 2:
         return None
-    return sum(ratios) / len(ratios)
+    return ratios[0], ratios[1]
 
 
 class Sender:
@@ -429,17 +435,20 @@ def main(argv=None) -> int:
     if not args.no_calibrate and cursor_server is not None:
         measured = calibrate_k(sender, current_cursor, args.hz)
         if measured:
-            servo.k = measured
+            servo.kx, servo.ky = measured
             servo.adapt = False   # calibrado vale mais que a estimativa do laco
-            px_per_count = measured / (protocol.MAX_COORD / args.width)
-            print(f"calibrado: {measured:.2f} unidades de tela por contagem "
-                  f"({px_per_count:.2f} px por contagem)", file=sys.stderr)
+            units_per_px = protocol.MAX_COORD / args.width
+            px_x = servo.kx / units_per_px
+            px_y = servo.ky / units_per_px
+            print(f"calibrado: x {servo.kx:.2f} unidades/contagem ({px_x:.2f} px), "
+                  f"y {servo.ky:.2f} ({px_y:.2f} px)", file=sys.stderr)
             if not args.max_step:
                 # O atuador drena 127 contagens por tick a 125 Hz: sem teto em
                 # pixels ele faz 19 telas por segundo e o laco nunca acompanha.
-                servo.max_step = max(1.0, args.max_px_frame / max(0.01, px_per_count))
+                servo.max_x = max(1.0, args.max_px_frame / max(0.01, px_x))
+                servo.max_y = max(1.0, args.max_px_frame / max(0.01, px_y))
                 print(f"teto de velocidade: {args.max_px_frame:.0f} px/frame "
-                      f"= {servo.max_step:.0f} contagens", file=sys.stderr)
+                      f"= x {servo.max_x:.0f} / y {servo.max_y:.0f} contagens", file=sys.stderr)
         else:
             print("calibracao falhou (cursor nao respondeu); usando estimativa do laco",
                   file=sys.stderr)
@@ -558,7 +567,7 @@ def main(argv=None) -> int:
                     f"frames {frames:5d}  alvo {'-' if target is None else 'ok'}  "
                     f"cursor {'-' if cursor is None else 'ok'}  "
                     f"erro {('-' if err is None else f'{err[0]:+.0f},{err[1]:+.0f}')}  "
-                    f"k {servo.k:4.2f}  passo {step if step else '-'}"
+                    f"k {servo.kx:5.1f}/{servo.ky:5.1f}  passo {step if step else '-'}"
                     f"  cruz {('-' if cursor is None else f'{cursor[0]},{cursor[1]}')}",
                     file=sys.stderr, flush=True,
                 )

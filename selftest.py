@@ -725,23 +725,26 @@ def _():
     import aim
 
     class Phone:
-        """Atuador simulado: aplica delta * k e devolve a posicao."""
-        def __init__(self, k, start=8000):
-            self.k = k
+        """Atuador simulado, com sensibilidade diferente por eixo."""
+        def __init__(self, kx, ky, start=8000):
+            self.kx, self.ky = kx, ky
             self.pos = [float(start), float(start)]
 
         def delta(self, dx, dy):
-            self.pos[0] = max(0, min(protocol.MAX_COORD, self.pos[0] + dx * self.k))
-            self.pos[1] = max(0, min(protocol.MAX_COORD, self.pos[1] + dy * self.k))
+            self.pos[0] = max(0, min(protocol.MAX_COORD, self.pos[0] + dx * self.kx))
+            self.pos[1] = max(0, min(protocol.MAX_COORD, self.pos[1] + dy * self.ky))
 
         def measure(self):
             return (self.pos[0], self.pos[1])
 
-    for k_true in (1.0, 17.0, 90.0):
-        phone = Phone(k_true)
+    # eixos com sensibilidades diferentes, como medido no hardware (1.78x em y)
+    for kx_true, ky_true in ((1.0, 1.0), (17.07, 30.33), (90.0, 40.0)):
+        phone = Phone(kx_true, ky_true)
         measured = aim.calibrate_k(phone, phone.measure, hz=200.0, step=150)
-        assert measured is not None, k_true
-        assert abs(measured - k_true) / k_true < 0.05, f"k real {k_true}, medido {measured}"
+        assert measured is not None, (kx_true, ky_true)
+        kx, ky = measured
+        assert abs(kx - kx_true) / kx_true < 0.05, f"kx real {kx_true}, medido {kx}"
+        assert abs(ky - ky_true) / ky_true < 0.05, f"ky real {ky_true}, medido {ky}"
 
 
 @check("aim: escolhe a cruz e nao a isca ciana da cena")
