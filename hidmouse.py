@@ -112,6 +112,7 @@ class Actuator:
 
         self.frames = 0
         self.writes = 0
+        self.drops = 0
         self.dropped_seq = 0
         self.dropped_age = 0
         self.last_print = 0.0
@@ -186,8 +187,9 @@ class Actuator:
             os.write(self.fd, report)
         except OSError as exc:
             if exc.errno in (errno.EAGAIN, errno.EWOULDBLOCK, errno.EPIPE):
-                # Endpoint queue full or host gone; dropping is correct, a
-                # backlog of old aims is worse than a missed frame.
+                # Fila do endpoint cheia ou host fora: descartar e correto (uma
+                # fila de reports velhos e pior), mas precisa aparecer no stats.
+                self.drops += 1
                 return False
             if exc.errno in (errno.ENODEV, errno.ESHUTDOWN, errno.EBADF):
                 try:
@@ -255,8 +257,11 @@ class Actuator:
         written = 0
         for _ in range(self.args.rel_home):
             if not self._write(protocol.hid_rel(-127, -127)):
-                break
+                time.sleep(0.002)
+                if not self._write(protocol.hid_rel(-127, -127)):
+                    break
             written += 1
+            time.sleep(0.001)
         self.sent = (0, 0)
         print(f"ancorado no canto superior esquerdo ({written} reports)", file=sys.stderr)
 
@@ -300,6 +305,7 @@ class Actuator:
         print(
             f"frames {self.frames:6d}  writes {self.writes:6d}  "
             f"stale {self.dropped_age:4d}  reorder {self.dropped_seq:4d}  "
+            f"drops {self.drops:4d}  "
             f"pos {self.sent[0]:5d},{self.sent[1]:5d}",
             file=sys.stderr,
             flush=True,
@@ -400,7 +406,7 @@ def main(argv: Optional[list[str]] = None) -> int:
 
     if args.dry_run:
         print(
-            f"-- frames={actuator.frames} writes={actuator.writes} "
+            f"-- frames={actuator.frames} writes={actuator.writes} drops={actuator.drops} "
             f"stale={actuator.dropped_age} reorder={actuator.dropped_seq} "
             f"final={actuator.sent}",
             file=sys.stderr,
