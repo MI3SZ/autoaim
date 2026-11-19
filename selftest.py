@@ -12,6 +12,7 @@ as a cursor that behaves strangely on a Tuesday.
 from __future__ import annotations
 
 import os
+import pathlib
 import subprocess
 import sys
 import tempfile
@@ -640,6 +641,26 @@ def _():
     assert reports, "nenhum report relativo"
     assert all(len(r) == 3 for r in reports), {len(r) for r in reports}
     assert sum(((r[1] + 128) % 256) - 128 for r in reports) > 0, "nao andou em x"
+
+
+@check("aim.py: o parser expoe todas as flags que o codigo usa")
+def _():
+    import ast
+    source = (pathlib.Path(ROOT) / "vision" / "aim.py").read_text()
+    tree = ast.parse(source)
+    args_used = {
+        node.attr
+        for node in ast.walk(tree)
+        if isinstance(node, ast.Attribute) and isinstance(node.value, ast.Name) and node.value.id == "args"
+    }
+    flags = set()
+    for node in ast.walk(tree):
+        if isinstance(node, ast.Call) and getattr(node.func, "attr", "") == "add_argument":
+            for arg in node.args:
+                if isinstance(arg, ast.Constant) and isinstance(arg.value, str):
+                    flags.add(arg.value.lstrip("-").replace("-", "_"))
+    missing = {name for name in args_used - flags if not name.startswith("_")}
+    assert not missing, f"aim.py usa args que o parser nao define: {sorted(missing)}"
 
 
 # --- gadget.sh --------------------------------------------------------------

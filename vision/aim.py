@@ -208,6 +208,7 @@ def main(argv=None) -> int:
     parser.add_argument("--deadband", type=float, default=6.0, help="HID units, ~0.4px")
     parser.add_argument("--duration", type=float, default=0.0)
     parser.add_argument("--preview", action="store_true")
+    parser.add_argument("--no-home", action="store_true", help="nao ancora no canto no inicio")
     args = parser.parse_args(argv)
 
     target_finder = Finder(hex_to_bgr(args.color), tol=30, l_tol=48, min_area=40, downsample=2)
