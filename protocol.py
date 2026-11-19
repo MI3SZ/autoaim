@@ -26,6 +26,11 @@ MAX_COORD = 32767
 
 FLAG_VALID = 0x01
 FLAG_CLICK = 0x02
+# Quando ligado, x e y NAO sao posicao: sao um deslocamento relativo, assinado,
+# em contagens de mouse. Existe porque controlar posicao atraves do modelo do
+# atuador trava: o modelo satura no fim do espaco de coordenadas e o cursor fica
+# devendo, sem jeito de mandar mais movimento.
+FLAG_DELTA = 0x04
 
 # 6 fixed fields: magic(2s) flags(B) x(H) y(H) age(B) seq(B)
 _HEAD = struct.Struct("<2sBHHBB")
@@ -52,6 +57,7 @@ class Frame(NamedTuple):
     click: bool
     age_ms: int
     seq: int
+    delta: bool = False
 
 
 def _clamp(value: int, low: int, high: int) -> int:
@@ -86,6 +92,10 @@ def unpack(data: bytes) -> Optional[Frame]:
     magic, flags, x, y, age, seq = _HEAD.unpack(data[:9])
     if magic != MAGIC:
         return None
+    delta = bool(flags & FLAG_DELTA)
+    if delta:
+        x = _to_signed(x)
+        y = _to_signed(y)
     return Frame(
         x=x,
         y=y,
@@ -93,7 +103,27 @@ def unpack(data: bytes) -> Optional[Frame]:
         click=bool(flags & FLAG_CLICK),
         age_ms=age,
         seq=seq,
+        delta=delta,
     )
+
+
+def _to_signed(value: int) -> int:
+    return value - 0x10000 if value >= 0x8000 else value
+
+
+def pack_delta(dx: int, dy: int, seq: int = 0, age_ms: int = 0) -> bytes:
+    """Deslocamento relativo em contagens de mouse (signed 16 bits)."""
+    dx = _clamp(int(dx), -32768, 32767)
+    dy = _clamp(int(dy), -32768, 32767)
+    head = _HEAD.pack(
+        MAGIC,
+        FLAG_VALID | FLAG_DELTA,
+        dx & 0xFFFF,
+        dy & 0xFFFF,
+        _clamp(int(age_ms), 0, 255),
+        seq & 0xFF,
+    )
+    return head + bytes((crc8(head),))
 
 
 def seq_is_newer(candidate: int, reference: Optional[int]) -> bool:

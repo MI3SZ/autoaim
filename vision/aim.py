@@ -1,27 +1,23 @@
 #!/usr/bin/env python3
-"""aim.py - laco fechado: mede onde o cursor esta, mede onde o alvo esta, corrige.
+"""aim.py - mira em laco fechado, medindo o cursor na tela.
 
-O problema que isso resolve: no modo relativo o atuador calcula
-`delta = alvo - modelo`, e o modelo dele comeca num chute (o centro da tela).
-Enquanto o modelo estiver errado, todo comando sai deslocado, e o limite de passo
-por report transforma o erro em movimento forte e torto.
+Por que delta e nao posicao: o atuador relativo anti-go controla posicao por um
+modelo interno (`delta = alvo - modelo`). Esse modelo satura no fim do espaco de
+coordenadas, e depois disso `delta` vale zero mesmo com o cursor longe do alvo -
+o cursor fica devendo e nao ha como mandar mais movimento. Aconteceu na pratica:
+`cmd` preso em 32767 e erro de 26 mil unidades.
 
-Duas coisas consertam isso, e nenhuma exige mexer no celular:
-
-  ancora   no inicio mandamos o alvo (0,0) por meio segundo. O atuador leva o
-           cursor para a esquerda ate o SO travar na borda; a partir dali o
-           modelo dele e a posicao real concordam, e mirar em absoluto vale.
-  servo    cada frame compara a posicao do cursor com a do alvo e integra a
-           correcao. A aceleracao do ponteiro e a escala fracionaria do GNOME
-           deixam de importar: o que importa e o erro medido, nao a matematica.
-
-Sem a cruz visivel (jogo sem HUD), cai em malha aberta: manda o alvo e deixa o
-modelo seguir, que e o comportamento antigo.
+Aqui o PC manda o deslocamento que falta, em contagens de mouse, e o atuador
+apenas escreve no HID. Quem sabe onde o cursor esta e a cruz ciana que o trainer
+desenha; quem sabe onde o alvo esta e o detector de cor. O laco mede o erro,
+estima quantas unidades de tela cada contagem vale (aceleracao de ponteiro e
+escala fracionaria mudam isso) e manda so o que falta.
 """
 
 from __future__ import annotations
 
 import argparse
+import math
 import os
 import socket
 import sys
@@ -51,14 +47,16 @@ def lab_reference(bgr) -> np.ndarray:
 
 
 class Finder:
-    """Maior blob de uma cor, em Lab, com morfologia ajustavel.
+    """Maior blob de uma cor, em Lab.
 
     Linhas finas (a cruz do cursor) precisam de open=0 e blur=0: qualquer um dos
-    dois apaga um traco de 2 px.
+    dois apaga um traco de 2 px. E a cruz e quatro segmentos soltos com vao no
+    meio, entao o fechamento precisa ser largo o bastante para uni-los - senao o
+    centro sai deslocado em meia duzia de pixels.
     """
 
     def __init__(self, bgr, tol=30.0, l_tol=48.0, min_area=40, downsample=2,
-                 open_size=3, close_size=7, blur=5):
+                 open_size=3, close_size=7, blur=5, reject_bands=True):
         self.ref = lab_reference(bgr)
         self.tol = tol
         self.l_tol = l_tol
@@ -67,6 +65,7 @@ class Finder:
         self.open_k = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (open_size, open_size)) if open_size > 1 else None
         self.close_k = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (close_size, close_size)) if close_size > 1 else None
         self.blur = int(blur) | 1
+        self.reject_bands = reject_bands
 
     def find(self, image):
         h, w = image.shape[:2]
@@ -86,14 +85,16 @@ class Finder:
         count, _, stats, centroids = cv2.connectedComponentsWithStats(mask, connectivity=8)
         best, best_area = -1, 0
         min_area = max(4, self.min_area // (self.ds * self.ds))
+        shrunk_w = w // self.ds
+        shrunk_h = h // self.ds
         for index in range(1, count):
             area = int(stats[index, cv2.CC_STAT_AREA])
             if area < min_area:
                 continue
-            name = int(stats[index, cv2.CC_STAT_WIDTH])
-            tall = int(stats[index, cv2.CC_STAT_HEIGHT])
-            if name > 0.6 * (w // self.ds) and tall < 10:
-                continue  # banda de rolling shutter / linha de UI
+            box_w = int(stats[index, cv2.CC_STAT_WIDTH])
+            box_h = int(stats[index, cv2.CC_STAT_HEIGHT])
+            if self.reject_bands and box_w > 0.60 * shrunk_w and box_h < max(8, 0.03 * shrunk_h):
+                continue
             if area > best_area:
                 best, best_area = index, area
         if best < 0:
@@ -102,83 +103,54 @@ class Finder:
 
 
 class Servo:
-    """Integrador no espaco do modelo do atuador.
+    """Controle proporcional em contagens de mouse, sobre erro medido.
 
-    O atuador faz `modelo = comando` a cada pacote e move o cursor por
-    `k * (comando - modelo)`. Integrando a correcao a gente obtem, no cursor,
-    um laco de primeira ordem: sem overshoot e convergente com qualquer k > 0.
+    `k` e quantas unidades de tela o cursor anda por contagem enviada. Vale 1.0
+    sem aceleracao e sem escala, mas o GNOME costuma entregar 0.5 a 1.6. Estimar
+    isso e o que impede o laco de ficar lento ou de dar tranco.
     """
 
-    def __init__(self, gain: float = 0.6, deadband: float = 6.0):
-        self.base_gain = gain
+    def __init__(self, gain: float = 0.55, deadband: float = 8.0, max_step: float = 2500.0):
+        self.gain = gain
         self.deadband = deadband
-        self.cmd = None
-        self.anchored = False
+        self.max_step = max_step
+        self.k = 1.0
         self.error = None
-        self.k = 1.0          # pixels andados por unidade comandada
-        self._prev_cmd = None     # comando de duas leituras atras
-        self._last_cursor = None  # cursor observado quando o ultimo foi calculado
+        self._sent = None
+        self._cursor_at_send = None
 
-    @staticmethod
-    def _clamp(value: float) -> float:
-        return min(protocol.MAX_COORD, max(0.0, value))
-
-    def update(self, target_hid, cursor_hid):
-        if cursor_hid is None:
-            # malha aberta: sem referencia do cursor, so aponta
-            self.cmd = target_hid
-            self.anchored = False
+    def update(self, target, cursor):
+        if target is None or cursor is None:
             self.error = None
-            self._last_cmd = self._last_cursor = None
-            return self.cmd
+            self._sent = None
+            return None
 
-        if not self.anchored:
-            # Semeia o modelo do atuador com a posicao REAL do cursor (o atuador
-            # ancorado entende o primeiro pacote como "voce esta aqui" e nao move).
-            self.cmd = (float(cursor_hid[0]), float(cursor_hid[1]))
-            self.anchored = True
-            self._last_cmd = self.cmd
-            self._last_cursor = (float(cursor_hid[0]), float(cursor_hid[1]))
-            return int(round(self.cmd[0])), int(round(self.cmd[1]))
+        # calibra k com o que foi pedido no frame anterior
+        if self._sent is not None and self._cursor_at_send is not None:
+            asked = self._sent[0]
+            moved = cursor[0] - self._cursor_at_send[0]
+            if abs(asked) >= 8:
+                observed = abs(moved / asked)
+                if 0.05 < observed < 20.0:
+                    self.k += 0.25 * (observed - self.k)
 
-        # Quantos pixels o cursor andou por unidade comandada? Aceleracao de
-        # ponteiro e escala fracionaria fazem isso valer 0.5 ou 1.6, e sem medir o
-        # laco ou fica lento ou bate no teto do espaco de coordenadas.
-        if self._prev_cmd is not None and self._last_cursor is not None:
-            asked = self.cmd[0] - self._prev_cmd[0]
-            moved = cursor_hid[0] - self._last_cursor[0]
-            if abs(asked) > 100:
-                k_obs = moved / asked
-                if 0.2 < k_obs < 3.0:
-                    self.k += 0.3 * (k_obs - self.k)
-
-        ex = target_hid[0] - cursor_hid[0]
-        ey = target_hid[1] - cursor_hid[1]
+        ex = target[0] - cursor[0]
+        ey = target[1] - cursor[1]
         self.error = (ex, ey)
 
-        self._prev_cmd = self.cmd
-        self._last_cursor = (float(cursor_hid[0]), float(cursor_hid[1]))
+        if abs(ex) <= self.deadband and abs(ey) <= self.deadband:
+            self._sent = None
+            return None
 
-        effective = min(1.5, self.base_gain / max(0.3, min(2.0, self.k)))
-        if abs(ex) > self.deadband or abs(ey) > self.deadband:
-            self.cmd = (self._clamp(self.cmd[0] + effective * ex),
-                        self._clamp(self.cmd[1] + effective * ey))
-        return int(round(self.cmd[0])), int(round(self.cmd[1]))
-
-
-def home(sender, hold: float = 0.6, rate: float = 40.0) -> None:
-    """Leva o cursor a borda superior esquerda antes de comecar.
-
-    O atuador relativo parte de um modelo chutado (o centro da tela). Mandar o
-    alvo (0,0) faz ele mover o cursor para a esquerda; o sistema operacional
-    trava em 0 e o modelo acompanha ate 0. Depois disso os dois concordam, e o
-    unico erro restante e de escala, que o servo mede e corrige.
-    """
-    count = max(1, int(hold * rate))
-    for _ in range(count):
-        sender.send(0, 0)
-        time.sleep(1.0 / rate)
-    print(f"ancorado no canto ({count} pacotes)", file=sys.stderr)
+        scale = 1.0 / max(0.05, min(20.0, self.k))
+        ux = max(-self.max_step, min(self.max_step, self.gain * ex * scale))
+        uy = max(-self.max_step, min(self.max_step, self.gain * ey * scale))
+        step = (int(round(ux)), int(round(uy)))
+        if step == (0, 0):
+            return None
+        self._sent = step
+        self._cursor_at_send = cursor
+        return step
 
 
 class Sender:
@@ -188,14 +160,18 @@ class Sender:
         self.seq = 0
         self.sent = 0
 
-    def send(self, x, y, valid=True):
+    def delta(self, dx, dy):
         self.seq = (self.seq + 1) & 0xFF
-        self.sock.sendto(protocol.pack(x, y, valid, False, 0, self.seq), self.addr)
+        self.sock.sendto(protocol.pack_delta(dx, dy, self.seq), self.addr)
         self.sent += 1
+
+    def park(self):
+        self.seq = (self.seq + 1) & 0xFF
+        self.sock.sendto(protocol.pack(0, 0, valid=False, seq=self.seq), self.addr)
 
 
 def main(argv=None) -> int:
-    parser = argparse.ArgumentParser(description="laco fechado de mira (cursor medido na tela)")
+    parser = argparse.ArgumentParser(description="mira em laco fechado (cursor medido na tela)")
     parser.add_argument("--device", default="/dev/video0")
     parser.add_argument("--width", type=int, default=1920)
     parser.add_argument("--height", type=int, default=1080)
@@ -204,16 +180,16 @@ def main(argv=None) -> int:
     parser.add_argument("--host", default="172.16.42.1")
     parser.add_argument("--port", type=int, default=5555)
     parser.add_argument("--hz", type=float, default=30.0)
-    parser.add_argument("--gain", type=float, default=0.5)
-    parser.add_argument("--deadband", type=float, default=6.0, help="HID units, ~0.4px")
+    parser.add_argument("--gain", type=float, default=0.55)
+    parser.add_argument("--deadband", type=float, default=8.0, help="unidades de tela (~0.5px)")
+    parser.add_argument("--max-step", type=float, default=2500.0, help="contagens maximas por frame")
     parser.add_argument("--duration", type=float, default=0.0)
     parser.add_argument("--preview", action="store_true")
-    parser.add_argument("--no-home", action="store_true", help="nao ancora no canto no inicio")
     args = parser.parse_args(argv)
 
     target_finder = Finder(hex_to_bgr(args.color), tol=30, l_tol=48, min_area=40, downsample=2)
     cursor_finder = Finder(hex_to_bgr(args.cursor_color), tol=45, l_tol=85, min_area=12,
-                           downsample=1, open_size=0, close_size=7, blur=0)
+                           downsample=1, open_size=0, close_size=7, blur=0, reject_bands=False)
 
     cap = cv2.VideoCapture(args.device, cv2.CAP_V4L2)
     if not cap.isOpened():
@@ -223,7 +199,7 @@ def main(argv=None) -> int:
     cap.set(cv2.CAP_PROP_FRAME_WIDTH, args.width)
     cap.set(cv2.CAP_PROP_FRAME_HEIGHT, args.height)
 
-    servo = Servo(args.gain, args.deadband)
+    servo = Servo(args.gain, args.deadband, args.max_step)
     sender = Sender(args.host, args.port)
     rect = (0, 0, args.width, args.height)
 
@@ -233,12 +209,10 @@ def main(argv=None) -> int:
     next_tick = start
     frames = targetless = cursorless = 0
     last_stats = start
+    warned = False
 
     print(f"aim: {args.device} {args.width}x{args.height} -> {args.host}:{args.port} "
-          f"ganho {args.gain} deadband {args.deadband}", file=sys.stderr)
-
-    if not args.no_home:
-        home(sender)
+          f"ganho {args.gain} deadband {args.deadband} max {args.max_step}", file=sys.stderr)
 
     try:
         while True:
@@ -251,28 +225,35 @@ def main(argv=None) -> int:
 
             target = target_finder.find(image)
             cursor = cursor_finder.find(image)
+            if target is not None:
+                target = protocol.to_abs(target[0], target[1], rect)
+            if cursor is not None:
+                cursor = protocol.to_abs(cursor[0], cursor[1], rect)
 
             if target is None:
                 targetless += 1
-                if targetless == 30:
+                if targetless == 30 and not warned:
                     print("aviso: alvo ausente ha 30 frames (janela coberta?)", file=sys.stderr)
-                sender.send(0, 0, valid=False)
+                    warned = True
+                sender.park()
+                step = None
             else:
                 targetless = 0
-                if cursor is None:
-                    cursorless += 1
-                else:
-                    cursorless = 0
-                t_hid = protocol.to_abs(target[0], target[1], rect)
-                c_hid = protocol.to_abs(cursor[0], cursor[1], rect) if cursor else None
-                cmd = servo.update(t_hid, c_hid)
-                sender.send(cmd[0], cmd[1])
+                warned = False
+                cursorless = 0 if cursor is not None else cursorless + 1
+                step = servo.update(target, cursor)
+                if step is not None:
+                    sender.delta(step[0], step[1])
 
             if args.preview:
                 if target:
-                    cv2.drawMarker(image, (int(target[0]), int(target[1])), (0, 255, 0), cv2.MARKER_CROSS, 18, 2)
+                    cv2.drawMarker(image, (target[0] * args.width // protocol.MAX_COORD,
+                                           target[1] * args.height // protocol.MAX_COORD),
+                                   (0, 255, 0), cv2.MARKER_CROSS, 20, 2)
                 if cursor:
-                    cv2.drawMarker(image, (int(cursor[0]), int(cursor[1])), (255, 255, 0), cv2.MARKER_CROSS, 18, 2)
+                    cv2.drawMarker(image, (cursor[0] * args.width // protocol.MAX_COORD,
+                                           cursor[1] * args.height // protocol.MAX_COORD),
+                                   (255, 255, 0), cv2.MARKER_CROSS, 20, 2)
                 cv2.imshow("aim", cv2.resize(image, None, fx=0.5, fy=0.5))
                 if cv2.waitKey(1) & 0xFF == 27:
                     raise KeyboardInterrupt
@@ -283,8 +264,7 @@ def main(argv=None) -> int:
                     f"frames {frames:5d}  alvo {'-' if target is None else 'ok'}  "
                     f"cursor {'-' if cursor is None else 'ok'}  "
                     f"erro {('-' if err is None else f'{err[0]:+.0f},{err[1]:+.0f}')}  "
-                    f"modo {'fechado' if servo.anchored else 'aberto'}  "
-                    f"cmd {servo.cmd}",
+                    f"k {servo.k:4.2f}  passo {step if step else '-'}",
                     file=sys.stderr, flush=True,
                 )
                 last_stats = now

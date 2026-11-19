@@ -161,6 +161,14 @@ class Actuator:
             self.target = None
             return
 
+        if frame.delta:
+            # Movimento relativo direto: sem modelo, sem saturacao. O PC mede o
+            # cursor de verdade e manda so a correcao que falta.
+            self.target = None
+            self.last_frame_at = now
+            self._apply_delta(frame.x, frame.y)
+            return
+
         self.target = (float(frame.x), float(frame.y))
         self.last_frame_at = now
 
@@ -197,6 +205,22 @@ class Actuator:
         self._write(protocol.hid_abs(x, y))
         self.sent = (x, y)
         self.primed = True
+
+    def _apply_delta(self, dx: int, dy: int) -> None:
+        """Escreve o deslocamento pedido, fatiado no tamanho do report."""
+        step_x, step_y = int(dx), int(dy)
+        for _ in range(64):
+            if not step_x and not step_y:
+                return
+            chunk_x = max(-127, min(127, step_x))
+            chunk_y = max(-127, min(127, step_y))
+            if not self._write(protocol.hid_rel(chunk_x, chunk_y)):
+                return
+            step_x -= chunk_x
+            step_y -= chunk_y
+            cx = max(0, min(protocol.MAX_COORD, self.sent[0] + chunk_x))
+            cy = max(0, min(protocol.MAX_COORD, self.sent[1] + chunk_y))
+            self.sent = (cx, cy)
 
     def _send_rel(self, tx: float, ty: float) -> None:
         cx, cy = self.sent

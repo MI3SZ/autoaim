@@ -85,6 +85,34 @@ def _():
     assert all(abs(v - protocol.MAX_COORD / 2) <= 1 for v in centre), centre
 
 
+@check("protocol: pacote de delta assinado")
+def _():
+    data = protocol.pack_delta(-1500, 900, seq=3)
+    assert len(data) == protocol.FRAME_SIZE
+    parsed = protocol.unpack(data)
+    assert parsed is not None and parsed.delta is True
+    assert (parsed.x, parsed.y) == (-1500, 900), parsed
+    extremes = protocol.unpack(protocol.pack_delta(-32768, 32767, seq=4))
+    assert (extremes.x, extremes.y) == (-32768, 32767), extremes
+    absolute = protocol.unpack(protocol.pack(1234, 30000, seq=5))
+    assert absolute.delta is False and (absolute.x, absolute.y) == (1234, 30000)
+
+
+@check("hidmouse: delta relativo e escrito direto, sem modelo")
+def _():
+    act = make_actuator()
+    reports = []
+    act._write = lambda report: reports.append(report) or True
+    act.feed(delta_packet(-1500, 900, seq=1), now=0.0)
+    assert len(reports) == 12, f"{len(reports)} reports (esperado 12 para 1500 em passos de 127)"
+    assert all(len(r) == 3 for r in reports), {len(r) for r in reports}
+    total_x = sum(((r[1] + 128) % 256) - 128 for r in reports)
+    total_y = sum(((r[2] + 128) % 256) - 128 for r in reports)
+    assert total_x == -1500 and total_y == 900, (total_x, total_y)
+    # delta nao passa pelo filtro nem pelo deadband: e aplicado na hora
+    assert act.target is None
+
+
 @check("protocol: seq modular e resync")
 def _():
     assert protocol.seq_is_newer(1, None)
@@ -487,6 +515,10 @@ def _():
 def packet(x, y, **kwargs) -> protocol.Frame:
     """feed() takes a decoded frame, like the real loop after drain()."""
     return protocol.unpack(protocol.pack(x, y, **kwargs))
+
+
+def delta_packet(dx, dy, **kwargs) -> protocol.Frame:
+    return protocol.unpack(protocol.pack_delta(dx, dy, **kwargs))
 
 
 def make_actuator(**overrides):

@@ -249,6 +249,13 @@ colide com pele nem com UI.
 A5 5A | flags | x u16 | y u16 | age | seq | crc8
 ```
 
+O bit `0x04` de `flags` muda o significado de `x`/`y`: em vez de posição, eles
+passam a ser um **deslocamento assinado em contagens de mouse**. É o modo usado
+pelo `vision/aim.py`, e por um motivo concreto: controlando posição através do
+modelo interno do atuador, o modelo satura no fim do espaço de coordenadas e
+`delta` vira zero mesmo com o cursor longe do alvo — o cursor fica devendo, sem
+jeito de mandar mais movimento. Em delta não existe modelo para saturar.
+
 `age` é a idade do frame em ms: o atuador descarta o que estiver velho em vez de
 perseguir um alvo de 300 ms atrás. `seq` descarta reordenação, `crc8` (polinômio
 0x07) descarta corrupção. O range `0..32767` cobre o **desktop virtual inteiro**,
