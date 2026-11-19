@@ -675,6 +675,31 @@ def _():
     assert sum(((r[1] + 128) % 256) - 128 for r in reports) > 0, "nao andou em x"
 
 
+@check("aim: escolhe a cruz e nao a isca ciana da cena")
+def _():
+    sys.path.insert(0, os.path.join(ROOT, "vision"))
+    import aim
+
+    candidates = [(699.0, 299.0, 120.0), (1530.0, 830.0, 3600.0)]
+    assert aim.pick_cursor(candidates, None)[0] == 699.0, "sem historico deve preferir o blob pequeno"
+    assert aim.pick_cursor(candidates, (700.0, 300.0))[0] == 699.0
+    assert aim.pick_cursor(candidates, (1500.0, 800.0))[0] == 1530.0
+    assert aim.pick_cursor(candidates, (100.0, 1000.0)) is None, "longe de tudo deve recusar"
+
+
+@check("aim: k nao diverge com medicao incoerente")
+def _():
+    sys.path.insert(0, os.path.join(ROOT, "vision"))
+    import aim
+
+    servo = aim.Servo(0.55, 8.0, 2500)
+    servo.update((20000, 20000), (10000, 10000))
+    before = servo.k
+    # cursor "anda" para o lado contrario do que foi pedido: deteccao furada
+    servo.update((20000, 20000), (10000 - 900, 10000))
+    assert servo.k == before, f"k mudou com movimento incoerente: {before} -> {servo.k}"
+
+
 @check("aim.py: o parser expoe todas as flags que o codigo usa")
 def _():
     import ast

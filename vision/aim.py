@@ -68,6 +68,14 @@ class Finder:
         self.reject_bands = reject_bands
 
     def find(self, image):
+        """Maior candidato, para o alvo (o cubo e o blob grande da cena)."""
+        found = self.candidates(image)
+        if not found:
+            return None
+        best = max(found, key=lambda item: item[2])
+        return best[0], best[1]
+
+    def candidates(self, image):
         h, w = image.shape[:2]
         small = cv2.resize(image, (w // self.ds, h // self.ds), interpolation=cv2.INTER_AREA) if self.ds > 1 else image
         if self.blur > 1:
@@ -83,7 +91,7 @@ class Finder:
             mask = cv2.morphologyEx(mask, cv2.MORPH_CLOSE, self.close_k)
 
         count, _, stats, centroids = cv2.connectedComponentsWithStats(mask, connectivity=8)
-        best, best_area = -1, 0
+        out = []
         min_area = max(4, self.min_area // (self.ds * self.ds))
         shrunk_w = w // self.ds
         shrunk_h = h // self.ds
@@ -95,11 +103,31 @@ class Finder:
             box_h = int(stats[index, cv2.CC_STAT_HEIGHT])
             if self.reject_bands and box_w > 0.60 * shrunk_w and box_h < max(8, 0.03 * shrunk_h):
                 continue
-            if area > best_area:
-                best, best_area = index, area
-        if best < 0:
-            return None
-        return float(centroids[best][0]) * self.ds, float(centroids[best][1]) * self.ds
+            out.append((
+                float(centroids[index][0]) * self.ds,
+                float(centroids[index][1]) * self.ds,
+                area * self.ds * self.ds,
+            ))
+        return out
+
+
+def pick_cursor(candidates, previous, max_jump=260.0, area_range=(25, 4000)):
+    """Escolhe a cruz entre os candidatos cianos.
+
+    Pegar o maior blob e o que quebra: a tela tem outros objetos cianos e o
+    detector alterna entre eles, o que envenena a estimativa de k e faz o cursor
+    pular. A cruz e pequena e, principalmente, nao da saltos grandes entre dois
+    frames - entao proximidade e o criterio certo.
+    """
+    plausible = [c for c in candidates if area_range[0] <= c[2] <= area_range[1]] or candidates
+    if not plausible:
+        return None
+    if previous is None:
+        return min(plausible, key=lambda c: c[2])  # a cruz e o blob pequeno
+    near = [c for c in plausible if math.hypot(c[0] - previous[0], c[1] - previous[1]) <= max_jump]
+    if not near:
+        return None
+    return min(near, key=lambda c: math.hypot(c[0] - previous[0], c[1] - previous[1]))
 
 
 class Servo:
@@ -125,11 +153,13 @@ class Servo:
             self._sent = None
             return None
 
-        # calibra k com o que foi pedido no frame anterior
+        # Calibra k com o que foi pedido no frame anterior. Exige passo
+        # relevante e movimento NO MESMO SENTIDO: sem isso um palpite de deteccao
+        # faz k divergir (ja aconteceu de ir de 1.0 a 8.0 em dois segundos).
         if self._sent is not None and self._cursor_at_send is not None:
             asked = self._sent[0]
             moved = cursor[0] - self._cursor_at_send[0]
-            if abs(asked) >= 8:
+            if abs(asked) >= 40 and moved * asked > 0:
                 observed = abs(moved / asked)
                 if 0.05 < observed < 20.0:
                     self.k += 0.25 * (observed - self.k)
@@ -208,6 +238,7 @@ def main(argv=None) -> int:
     deadline = start + args.duration if args.duration else None
     next_tick = start
     frames = targetless = cursorless = 0
+    last_cursor = None
     last_stats = start
     warned = False
 
@@ -224,7 +255,9 @@ def main(argv=None) -> int:
             frames += 1
 
             target = target_finder.find(image)
-            cursor = cursor_finder.find(image)
+            cursor = pick_cursor(cursor_finder.candidates(image), last_cursor)
+            if cursor is not None:
+                last_cursor = cursor
             if target is not None:
                 target = protocol.to_abs(target[0], target[1], rect)
             if cursor is not None:
@@ -264,7 +297,8 @@ def main(argv=None) -> int:
                     f"frames {frames:5d}  alvo {'-' if target is None else 'ok'}  "
                     f"cursor {'-' if cursor is None else 'ok'}  "
                     f"erro {('-' if err is None else f'{err[0]:+.0f},{err[1]:+.0f}')}  "
-                    f"k {servo.k:4.2f}  passo {step if step else '-'}",
+                    f"k {servo.k:4.2f}  passo {step if step else '-'}"
+                    f"  cruz {('-' if cursor is None else f'{cursor[0]},{cursor[1]}')}",
                     file=sys.stderr, flush=True,
                 )
                 last_stats = now
