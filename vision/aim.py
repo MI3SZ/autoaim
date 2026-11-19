@@ -386,6 +386,8 @@ def main(argv=None) -> int:
     parser.add_argument("--no-calibrate", action="store_true",
                         help="pula a medicao de k no inicio e usa a estimativa do laco")
     args = parser.parse_args(argv)
+    fx = 1.0 / (protocol.MAX_COORD / args.width)
+    fy = 1.0 / (protocol.MAX_COORD / args.height)
 
     target_finder = Finder(hex_to_bgr(args.color), tol=30, l_tol=48, min_area=40, downsample=2)
     cursor_finder = Finder(hex_to_bgr(args.cursor_color), tol=45, l_tol=85, min_area=12,
@@ -458,6 +460,7 @@ def main(argv=None) -> int:
 
     frames = targetless = cursorless = 0
     last_cursor = None
+    prev_sample = None   # (tempo, cursor) para medir velocidade real
     frozen_seen = None
     frozen_count = 0
     frozen_warned = False
@@ -575,11 +578,31 @@ def main(argv=None) -> int:
                 err = servo.error
                 err_px = (int(err[0] / (protocol.MAX_COORD / args.width)),
                           int(err[1] / (protocol.MAX_COORD / args.height))) if err else None
+
+                # Velocidade real x comandada: se divergirem, o ganho do host nao
+                # e o que a calibracao mediu, e o laco nunca vai acertar.
+                speed_real = speed_cmd = None
+                if cursor is not None:
+                    if prev_sample is not None:
+                        dt_s = now - prev_sample[0]
+                        if dt_s > 0.01:
+                            speed_real = (int((cursor[0] - prev_sample[1][0]) / dt_s
+                                              * args.width / protocol.MAX_COORD),
+                                          int((cursor[1] - prev_sample[1][1]) / dt_s
+                                              * args.height / protocol.MAX_COORD))
+                    prev_sample = (now, cursor)
+                if step is not None:
+                    elapsed = now - start
+                    # contagens -> px: k (unidades por contagem) x (px por unidade)
+                    speed_cmd = (int(step[0] * servo.kx * fx * args.hz),
+                                 int(step[1] * servo.ky * fy * args.hz))
                 print(
                     f"erro {('-' if err is None else f'{err_px[0]:+5d},{err_px[1]:+5d}px')}  "
                     f"passo {str(step) if step else '-':>12s}  "
                     f"cruz {('-' if cursor is None else f'{int(cursor[0]*args.width/protocol.MAX_COORD)},{int(cursor[1]*args.height/protocol.MAX_COORD)}')}"
-                    f"  k {servo.kx:4.1f}/{servo.ky:4.1f}",
+                    f"  v {('-' if speed_real is None else f'{speed_real[0]},{speed_real[1]}')}"
+                    f"/{('-' if speed_cmd is None else f'{speed_cmd[0]},{speed_cmd[1]}')}px/s"
+                    f"  {frames / max(0.001, now - start):4.1f}Hz",
                     file=sys.stderr, flush=True,
                 )
                 last_stats = now
