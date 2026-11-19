@@ -442,8 +442,18 @@ def main(argv=None) -> int:
                    log=lambda msg: print(msg, file=sys.stderr, flush=True))
         return 0
 
-    if not args.no_calibrate and cursor_server is not None:
-        measured = calibrate_k(sender, current_cursor, args.hz)
+    def camera_cursor():
+        """Le a bola branca de um frame novo: a mesma fonte que o laco usa."""
+        ok, frame = cap.read()
+        if not ok or frame is None:
+            return None
+        found = cursor_finder.find(frame)
+        return protocol.to_abs(found[0], found[1], rect) if found else None
+
+    measure = current_cursor if cursor_server is not None and args.cursor_source != "vision" else camera_cursor
+
+    if not args.no_calibrate:
+        measured = calibrate_k(sender, measure, args.hz)
         if measured:
             servo.kx, servo.ky = measured
             servo.adapt = False   # calibrado vale mais que a estimativa do laco
@@ -460,8 +470,8 @@ def main(argv=None) -> int:
                 print(f"teto de velocidade: {args.max_px_frame:.0f} px/frame "
                       f"= x {servo.max_x:.0f} / y {servo.max_y:.0f} contagens", file=sys.stderr)
         else:
-            print("calibracao falhou (cursor nao respondeu); usando estimativa do laco",
-                  file=sys.stderr)
+            print("calibracao falhou (o cursor nao se moveu o bastante); usando o teto "
+                  "padrao e a estimativa do laco", file=sys.stderr)
 
     frames = targetless = cursorless = 0
     last_cursor = None
