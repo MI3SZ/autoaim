@@ -197,7 +197,7 @@ class Servo:
     isso e o que impede o laco de ficar lento ou de dar tranco.
     """
 
-    def __init__(self, gain: float = 0.55, deadband: float = 8.0, max_step: float = 450.0):
+    def __init__(self, gain: float = 0.25, deadband: float = 30.0, max_step: float = 300.0):
         self.gain = gain
         self.deadband = deadband
         self.max_step = max_step
@@ -269,10 +269,11 @@ def main(argv=None) -> int:
     parser.add_argument("--host", default="172.16.42.1")
     parser.add_argument("--port", type=int, default=5555)
     parser.add_argument("--hz", type=float, default=30.0)
-    parser.add_argument("--gain", type=float, default=0.55)
-    parser.add_argument("--deadband", type=float, default=8.0, help="unidades de tela (~0.5px)")
-    parser.add_argument("--max-step", type=float, default=450.0,
-                        help="contagens maximas por frame (o atuador drena ~127 a 125Hz)")
+    parser.add_argument("--gain", type=float, default=0.25,
+                        help="fracao do erro por frame; acima de ~0.3 bate lata com a latencia")
+    parser.add_argument("--deadband", type=float, default=30.0, help="unidades de tela (~2px)")
+    parser.add_argument("--max-step", type=float, default=300.0,
+                        help="contagens maximas por frame; segura o tranco inicial")
     parser.add_argument("--duration", type=float, default=0.0)
     parser.add_argument("--preview", action="store_true")
     parser.add_argument("--cursor-source", choices=("auto", "http", "vision"), default="auto",
@@ -318,6 +319,8 @@ def main(argv=None) -> int:
 
     print(f"aim: {args.device} {args.width}x{args.height} -> {args.host}:{args.port} "
           f"ganho {args.gain} deadband {args.deadband} max {args.max_step}", file=sys.stderr)
+    print("dica: ganho alto demais faz o cursor bater de canto a canto; "
+          "se oscilar, baixe --gain (0.08 ~ 0.25)", file=sys.stderr)
 
     try:
         while True:
