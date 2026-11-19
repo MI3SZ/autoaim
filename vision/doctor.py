@@ -212,11 +212,10 @@ def main(argv=None) -> int:
                     f"frame {shape[1]}x{shape[0]} vs pedido {args.width}x{args.height}")
 
     identical = sum(1 for a, b in zip(frames, frames[1:]) if np.array_equal(a, b))
-    if identical >= len(frames) - 2:
-        report.fail("captura: congelada", f"{identical}/{len(frames)-1} frames identicos - "
-                    "OBS coberto ou camera virtual parada")
-    else:
-        report.ok("captura: viva", f"{identical} frames repetidos de {len(frames)-1}")
+    # Tela parada gera frames identicos por definicao. Isto e informacao, nao
+    # diagnostico: o teste de congelamento de verdade acontece quando algo DEVE
+    # mudar (depois que o cursor se move).
+    report.info("captura: cena estatica", f"{identical} frames repetidos de {len(frames)-1}")
 
     # ---- 2. alvo ---------------------------------------------------------
     for _ in range(20):
@@ -249,6 +248,18 @@ def main(argv=None) -> int:
                     "J5 nao esta recebendo/aplicando; veja o hidmouse no celular")
     else:
         report.ok("canal USB responde", f"-40 contagens -> {moved[0]:+.0f} px")
+
+    # ---- 4b. congelamento de verdade: a imagem muda quando algo muda? -----
+    before_frame = vision.frame()
+    sender.delta(-120, 0)
+    time.sleep(0.25)
+    after_frame = vision.frame()
+    if before_frame is not None and after_frame is not None:
+        if np.array_equal(before_frame, after_frame):
+            report.fail("captura: NAO acompanha o movimento",
+                        "mandei 120 contagens e o frame ficou identico - OBS parado/coberto")
+        else:
+            report.ok("captura: acompanha o movimento", "o frame mudou depois do passo")
 
     # ---- 5. centraliza em malha fechada ---------------------------------
     print("\n-- centralizando o cursor (malha fechada) --")
