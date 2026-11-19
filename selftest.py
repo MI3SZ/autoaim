@@ -719,6 +719,31 @@ def _():
         server.close()
 
 
+@check("aim: calibracao de k mede o fator real")
+def _():
+    sys.path.insert(0, os.path.join(ROOT, "vision"))
+    import aim
+
+    class Phone:
+        """Atuador simulado: aplica delta * k e devolve a posicao."""
+        def __init__(self, k, start=8000):
+            self.k = k
+            self.pos = [float(start), float(start)]
+
+        def delta(self, dx, dy):
+            self.pos[0] = max(0, min(protocol.MAX_COORD, self.pos[0] + dx * self.k))
+            self.pos[1] = max(0, min(protocol.MAX_COORD, self.pos[1] + dy * self.k))
+
+        def measure(self):
+            return (self.pos[0], self.pos[1])
+
+    for k_true in (1.0, 17.0, 90.0):
+        phone = Phone(k_true)
+        measured = aim.calibrate_k(phone, phone.measure, hz=200.0, step=150)
+        assert measured is not None, k_true
+        assert abs(measured - k_true) / k_true < 0.05, f"k real {k_true}, medido {measured}"
+
+
 @check("aim: escolhe a cruz e nao a isca ciana da cena")
 def _():
     sys.path.insert(0, os.path.join(ROOT, "vision"))

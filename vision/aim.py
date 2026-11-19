@@ -205,6 +205,7 @@ class Servo:
         self.error = None
         self._sent = None
         self._cursor_at_send = None
+        self.adapt = True
 
     def update(self, target, cursor):
         if target is None or cursor is None:
@@ -215,7 +216,7 @@ class Servo:
         # Calibra k com o que foi pedido no frame anterior. Exige passo
         # relevante e movimento NO MESMO SENTIDO: sem isso um palpite de deteccao
         # faz k divergir (ja aconteceu de ir de 1.0 a 8.0 em dois segundos).
-        if self._sent is not None and self._cursor_at_send is not None:
+        if self._sent is not None and self._cursor_at_send is not None and self.adapt:
             asked = self._sent[0]
             moved = cursor[0] - self._cursor_at_send[0]
             if abs(asked) >= 40 and moved * asked > 0:
@@ -240,6 +241,49 @@ class Servo:
         self._sent = step
         self._cursor_at_send = cursor
         return step
+
+
+def calibrate_k(sender, measure, hz: float = 30.0, step: int = 150):
+    """Mede quantas unidades de tela o cursor anda por contagem enviada.
+
+    Estimar isso de dentro do laco nao funciona: o cursor passa boa parte do
+    tempo preso na borda, onde o deslocamento medido e truncado, e a media
+    exponencial nunca converge. Aqui e um experimento controlado - manda um
+    passo conhecido na direcao do centro da tela (onde ha espaco para andar),
+    espera assentar e mede o deslocamento total.
+    """
+    position = None
+    for _ in range(90):
+        position = measure()
+        if position:
+            break
+        time.sleep(1.0 / hz)
+    if not position:
+        return None
+
+    ratios = []
+    for axis in (0, 1):
+        start = position[axis]
+        sign = 1 if start < protocol.MAX_COORD / 2 else -1
+        delta = [0, 0]
+        delta[axis] = sign * step
+        # Um envio so: o atuador acumula e drena, entao mandar duas vezes
+        # comanda o dobro e a medicao sai dobrada.
+        sender.delta(*delta)
+        latest = position
+        for _ in range(3):        # espera o movimento assentar e mede o total
+            time.sleep(2.0 / hz)
+            fetched = measure()
+            if fetched:
+                latest = fetched
+        moved = (latest[axis] - start) * sign
+        if moved > step * 0.2:
+            ratios.append(moved / step)
+        position = latest
+
+    if not ratios:
+        return None
+    return sum(ratios) / len(ratios)
 
 
 class Sender:
@@ -279,11 +323,25 @@ def main(argv=None) -> int:
     parser.add_argument("--cursor-source", choices=("auto", "http", "vision"), default="auto",
                         help="http = posicao publicada pelo trainer; vision = cruz ciana")
     parser.add_argument("--cursor-port", type=int, default=8765)
+    parser.add_argument("--no-calibrate", action="store_true",
+                        help="pula a medicao de k no inicio e usa a estimativa do laco")
     args = parser.parse_args(argv)
 
     target_finder = Finder(hex_to_bgr(args.color), tol=30, l_tol=48, min_area=40, downsample=2)
     cursor_finder = Finder(hex_to_bgr(args.cursor_color), tol=45, l_tol=85, min_area=12,
                            downsample=1, open_size=0, close_size=7, blur=0, reject_bands=False)
+
+    def current_cursor():
+        """Posicao do cursor em unidades de tela, da fonte que estiver ativa."""
+        if cursor_server is not None:
+            published = cursor_server.latest()
+            if published:
+                px, py, vw, vh, dpr = published
+                if vw > 0 and vh > 0:
+                    return protocol.to_abs(px * args.width / vw, py * args.height / vh, rect)
+        return None
+
+    rect = (0, 0, args.width, args.height)
 
     cap = cv2.VideoCapture(args.device, cv2.CAP_V4L2)
     if not cap.isOpened():
@@ -304,12 +362,22 @@ def main(argv=None) -> int:
         except OSError as exc:
             print(f"cursor: porta {args.cursor_port} indisponivel ({exc}); usando visao",
                   file=sys.stderr)
-    rect = (0, 0, args.width, args.height)
-
     period = 1.0 / args.hz
     start = time.monotonic()
     deadline = start + args.duration if args.duration else None
     next_tick = start
+    if not args.no_calibrate and cursor_server is not None:
+        measured = calibrate_k(sender, current_cursor, args.hz)
+        if measured:
+            servo.k = measured
+            servo.adapt = False   # calibrado vale mais que a estimativa do laco
+            print(f"calibrado: {measured:.2f} unidades de tela por contagem "
+                  f"({measured / (protocol.MAX_COORD / args.width):.2f} px por contagem)",
+                  file=sys.stderr)
+        else:
+            print("calibracao falhou (cursor nao respondeu); usando estimativa do laco",
+                  file=sys.stderr)
+
     frames = targetless = cursorless = 0
     last_cursor = None
     lost = 0
