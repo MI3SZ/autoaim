@@ -41,6 +41,48 @@ dele:
 cd ~/Documents/j5 && DEST=j5 ./deploy.sh user@192.168.0.18
 ```
 
+## Diagnóstico
+
+Antes de ajustar qualquer coisa, meça:
+
+```sh
+python3 vision/doctor.py --host 172.16.42.1
+```
+
+Ele testa cada camada na ordem do sistema e emite um veredito: captura viva e
+acompanhando o movimento, alvo, cursor, canal USB, centralização em malha
+fechada, sensibilidade por eixo, linearidade da resposta e latência — desta
+última sai o ganho estável sugerido.
+
+Números medidos num Fedora 45 / GNOME Wayland / NVIDIA, J5 em modo relativo:
+
+| grandeza | valor |
+|---|---|
+| canal USB | `-40` contagens → `-40 px` (1:1) |
+| `k` | 1,00 px por contagem nos dois eixos |
+| linearidade | 1,00 para passos de 30, 90 e 180 |
+| latência | 107 ms (~3,2 frames) |
+| ganho estável | 0,21 |
+
+Com isso, a linha de comando que funcionou:
+
+```sh
+python3 vision/aim.py --device /dev/video0 --host 172.16.42.1 --gain 0.21
+```
+
+`--dump DIR` salva frames em disco (`inicial.png`, `antes.png`, `depois.png`)
+quando a dúvida é o que a captura está entregando.
+
+### O que cada sintoma costuma ser
+
+| sintoma | causa | onde olhar |
+|---|---|---|
+| cursor vai ao canto e fica | posição do cursor desconhecida | `doctor`: teste de cursor e canal |
+| cursor mexe, "detects" congela | captura parada (OBS coberto no Wayland) | `doctor`: "acompanha o movimento" |
+| cursor anda mais que o comandado | `k` errado ou laço a mais de 30 Hz | `doctor`: linearidade e latência |
+| oscila em cima do alvo | ganho acima de `1/(latência em frames)` | `doctor`: ganho sugerido |
+| alvo não encontrado | modo do trainer ou cor | `doctor`: alvo magenta |
+
 ## Verificação
 
 ```sh
@@ -285,6 +327,8 @@ vision/calibrate.py poly2 vs homografia, escolhido por erro medido
 vision/sender.py   UDP + padrões de teste
 vision/run.py      o loop
 vision/record.py   gravação com timestamp (calibração e depuração)
+vision/aim.py      laço fechado: cursor lido do frame, delta direto no HID
+vision/doctor.py   diagnóstico de todas as camadas, com veredito
 ```
 
 ## Ajustes que existem por um motivo
