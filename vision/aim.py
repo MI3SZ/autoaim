@@ -518,12 +518,15 @@ def main(argv=None) -> int:
                     frozen_count = 0
                     frozen_seen = cursor
                     frozen_warned = False
-                if frozen_count == 45 and not frozen_warned:
-                    frozen_warned = True
-                    print("aviso: a posicao publicada esta congelada ha 45 frames. "
-                          "O ponteiro saiu da janela do trainer (outra janela por cima?). "
-                          "Deixe o trainer em tela cheia e CLIQUE nele para dar foco.",
-                          file=sys.stderr)
+                if frozen_count >= 10:
+                    if not frozen_warned:
+                        frozen_warned = True
+                        print("aviso: posicao congelada ha 10 frames - PARANDO de mandar "
+                              "movimento. O ponteiro nao esta sobre a pagina: alguma janela "
+                              "esta por cima (o terminal?). Deixe o trainer em tela cheia "
+                              "e clique nele. Sem poder ver o cursor, empurrar as cegas so "
+                              "leva ele para o canto.", file=sys.stderr)
+                    cursor = None   # sem leitura confiavel, nao movemos nada
 
             if cursor is None and last_cursor is not None and args.cursor_source == "vision":
                 lost += 1
