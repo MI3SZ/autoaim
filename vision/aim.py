@@ -388,6 +388,9 @@ def main(argv=None) -> int:
 
     frames = targetless = cursorless = 0
     last_cursor = None
+    frozen_seen = None
+    frozen_count = 0
+    frozen_warned = False
     lost = 0
     viewport_checked = False
     last_stats = start
@@ -436,6 +439,22 @@ def main(argv=None) -> int:
                 target = protocol.to_abs(target[0], target[1], rect)
             if cursor is not None:
                 cursor = protocol.to_abs(cursor[0], cursor[1], rect)
+
+            # A posicao publicada congela quando o ponteiro sai da janela do
+            # trainer (outra janela por cima). Sem isso o laco empurra as cegas.
+            if cursor is not None:
+                if frozen_seen is not None and cursor == frozen_seen:
+                    frozen_count += 1
+                else:
+                    frozen_count = 0
+                    frozen_seen = cursor
+                    frozen_warned = False
+                if frozen_count == 45 and not frozen_warned:
+                    frozen_warned = True
+                    print("aviso: a posicao publicada esta congelada ha 45 frames. "
+                          "O ponteiro saiu da janela do trainer (outra janela por cima?). "
+                          "Deixe o trainer em tela cheia e CLIQUE nele para dar foco.",
+                          file=sys.stderr)
 
             if cursor is None and last_cursor is not None and args.cursor_source == "vision":
                 lost += 1
