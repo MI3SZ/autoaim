@@ -21,6 +21,26 @@ ou a câmera de outro celular).
 A câmera do J5 está fora. Por isso a visão roda no PC e o aparelho é o atuador —
 que é, aliás, o papel em que ele é insubstituível.
 
+## Atualizar
+
+O projeto vive em https://github.com/MI3SZ/autoaim.
+
+```sh
+# primeira vez (o diretório antigo não era repositório)
+cd ~/Documents && mv j5 j5-antigo
+git clone https://github.com/MI3SZ/autoaim.git j5
+
+# depois de qualquer mudança
+cd ~/Documents/j5 && git pull --ff-only
+```
+
+Se algum arquivo do celular mudar, o pull não basta — o aparelho roda a cópia
+dele:
+
+```sh
+cd ~/Documents/j5 && DEST=j5 ./deploy.sh user@192.168.0.18
+```
+
 ## Verificação
 
 ```sh
