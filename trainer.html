@@ -1,0 +1,442 @@
+<!doctype html>
+<html lang="pt-BR">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<meta name="color-scheme" content="dark">
+<title>j5 aim trainer</title>
+<style>
+  :root{ --bg:#111418; --fg:#e6e9ec; --muted:#8b959e; --line:#242a30; }
+  html,body{ margin:0; height:100%; background:var(--bg); color:var(--fg);
+    font:12px/1.55 ui-monospace,SFMono-Regular,Menlo,Consolas,monospace;
+    overflow:hidden; cursor:none; user-select:none; }
+  canvas{ display:block; }
+  #hud{ position:fixed; left:14px; top:12px; padding:9px 12px; border:1px solid var(--line);
+    border-radius:6px; background:rgba(8,10,13,.82); white-space:pre; pointer-events:none;
+    color:var(--muted); font-variant-numeric:tabular-nums; }
+  #hud b{ color:var(--fg); font-weight:600; }
+  #keys{ position:fixed; left:14px; bottom:12px; color:#39424c; pointer-events:none;
+    white-space:pre; font-size:11px; }
+</style>
+</head>
+<body>
+<canvas id="cv"></canvas>
+<div id="hud"></div>
+<div id="keys">1-5 modo   r reset   f fullscreen   e export json</div>
+<script>
+(function(){
+'use strict';
+
+const MODES = ['flick','grid','track','chase','calib'];
+const q = new URLSearchParams(location.search);
+const clamp = (v,a,b) => v<a?a:v>b?b:v;
+const hex = (q.get('color') || 'd000d0').replace(/[^0-9a-fA-F]/g,'').padEnd(6,'0').slice(0,6);
+
+const CFG = {
+  color: '#' + hex,
+  size: clamp(parseInt(q.get('size'),10) || 56, 16, 240),
+  dwell: clamp(parseInt(q.get('dwell'),10) || 100, 0, 2000),   // ms inside the cube to count
+  margin: 120,
+  chaseHz: 0.5
+};
+
+const cv = document.getElementById('cv');
+const ctx = cv.getContext('2d', { alpha:false });
+const hud = document.getElementById('hud');
+
+let W = innerWidth, H = innerHeight, DPR = 1;
+let mode = MODES.includes(q.get('mode')) ? q.get('mode') : 'flick';
+
+const pointer = { x:0, y:0, seen:false };
+let targets = [];
+let hits = 0, spawns = 0, reactions = [], hitDistances = [];
+let frames = 0, fps = 0, fpsAt = performance.now(), lastHud = 0;
+let lastFrameAt = performance.now();
+let chase = { dot:null, lat:null, samples:0 };
+let round = { calib:null };
+
+/* ---------- geometry ---------- */
+
+function resize(){
+  DPR = Math.max(1, devicePixelRatio || 1);
+  W = innerWidth; H = innerHeight;
+  cv.width = Math.round(W * DPR);
+  cv.height = Math.round(H * DPR);
+  cv.style.width = W + 'px';
+  cv.style.height = H + 'px';
+  ctx.setTransform(DPR, 0, 0, DPR, 0, 0);
+  resetRound();
+}
+
+function rndPoint(){
+  const m = CFG.margin;
+  let best = { x:m + Math.random()*(W-2*m), y:m + Math.random()*(H-2*m) };
+  for (let i=0; i<12; i++){
+    if (!pointer.seen) break;
+    const d = Math.hypot(best.x - pointer.x, best.y - pointer.y);
+    if (d > CFG.size * 2.5) break;
+    best = { x:m + Math.random()*(W-2*m), y:m + Math.random()*(H-2*m) };
+  }
+  return best;
+}
+
+function mk(x, y, now){
+  return { x, y, dwell:0, cool:0, t0:now };
+}
+
+/* ---------- rounds ---------- */
+
+function resetRound(){
+  const now = performance.now();
+  targets = [];
+  round.calib = null;
+  chase.dot = null;
+  chase.lat = null;
+
+  if (mode === 'flick'){
+    const p = rndPoint();
+    targets.push(mk(p.x, p.y, now));
+    spawns++;
+  } else if (mode === 'grid'){
+    const cols = 3, rows = 3;
+    for (let r=1; r<=rows; r++){
+      for (let c=1; c<=cols; c++){
+        targets.push(mk(W*c/(cols+1), H*r/(rows+1), now));
+        spawns++;
+      }
+    }
+  } else if (mode === 'track'){
+    const p = rndPoint();
+    targets.push(mk(p.x, p.y, now));
+    spawns++;
+  } else if (mode === 'calib'){
+    buildCalib(now);
+  }
+}
+
+function resetStats(){
+  hits = 0; spawns = 0; reactions = []; hitDistances = [];
+}
+
+function buildCalib(now){
+  const fractions = [0.08, 0.5, 0.92];
+  const pts = [];
+  let i = 0;
+  for (const fy of fractions){
+    for (const fx of fractions){
+      pts.push({ i:i++, x:Math.round(W*fx), y:Math.round(H*fy), t0:0, t1:0, tw0:0, tw1:0 });
+    }
+  }
+  round.calib = { pts, idx:-1, next:now + 1200, done:false, hold:1000, gap:320 };
+}
+
+function updateCalib(now){
+  const c = round.calib;
+  if (!c || c.done || now < c.next) return;
+  if (c.idx + 1 >= c.pts.length){ c.done = true; return; }
+  c.idx++;
+  const p = c.pts[c.idx];
+  p.t0 = now;
+  p.t1 = now + c.hold;
+  p.tw0 = Date.now();
+  p.tw1 = Date.now() + c.hold;
+  c.next = p.t1 + c.gap;
+}
+
+/* ---------- hitting ---------- */
+
+function registerHit(t, now){
+  hits++;
+  reactions.push(Math.max(0, now - t.t0));
+  const d = Math.hypot(pointer.x - t.x, pointer.y - t.y);
+  hitDistances.push(d);
+  t.dwell = 0;
+  t.t0 = now;
+
+  if (mode === 'flick'){
+    const p = rndPoint();
+    t.x = p.x; t.y = p.y;
+    t.cool = now + 140;
+    spawns++;
+  } else if (mode === 'track'){
+    t.cool = now + 400;      // keep it moving, just stop counting for a moment
+  } else {
+    t.cool = now + 500;      // grid: same spot, short cooldown
+    spawns++;
+  }
+}
+
+function stepTargets(now, dt){
+  if (mode === 'track' && targets[0]){
+    const t = targets[0];
+    const s = now / 1000;
+    t.x = clamp(W/2 + W*0.32*Math.sin(s*1.7), 40, W-40);
+    t.y = clamp(H/2 + H*0.28*Math.sin(s*2.6 + 1.1), 40, H-40);
+  }
+
+  for (const t of targets){
+    if (now < t.cool) continue;
+    const half = CFG.size / 2;
+    const inside = pointer.seen &&
+      Math.abs(pointer.x - t.x) <= half && Math.abs(pointer.y - t.y) <= half;
+    if (inside){
+      t.dwell += dt;
+      if (t.dwell >= CFG.dwell) registerHit(t, now);
+    } else {
+      t.dwell = Math.max(0, t.dwell - dt*2);
+    }
+  }
+}
+
+/* ---------- latency probe ---------- */
+
+function updateChase(now){
+  const w = 2*Math.PI*CFG.chaseHz;
+  const cx = W/2, cy = H/2, r = Math.min(W,H)*0.30;
+  const angle = w * now / 1000;
+  chase.dot = { x:cx + r*Math.cos(angle), y:cy + r*Math.sin(angle) };
+
+  if (!pointer.seen) return;
+  const pr = Math.hypot(pointer.x - cx, pointer.y - cy);
+  if (Math.abs(pr - r) > r*0.55) return;
+
+  // The cursor trails the dot by a phase angle. Convert that angle straight
+  // into milliseconds: this measures the whole loop, camera included, which is
+  // the only number that matters and the one you cannot compute by adding parts.
+  const pa = Math.atan2(pointer.y - cy, pointer.x - cx);
+  let delta = pa - angle;
+  while (delta >  Math.PI) delta -= 2*Math.PI;
+  while (delta < -Math.PI) delta += 2*Math.PI;
+  const ms = delta / w * 1000;
+  if (ms < -400 || ms > 1200) return;
+
+  chase.samples++;
+  chase.lat = chase.lat === null ? ms : chase.lat + (ms - chase.lat) * 0.12;
+}
+
+/* ---------- drawing ---------- */
+
+function drawCube(t, now){
+  const half = CFG.size / 2;
+  ctx.fillStyle = CFG.color;
+  ctx.fillRect(Math.round(t.x - half), Math.round(t.y - half), CFG.size, CFG.size);
+  if (t.dwell > 0 && now >= t.cool){
+    const p = Math.min(1, t.dwell / Math.max(1, CFG.dwell));
+    ctx.strokeStyle = '#ffffff';
+    ctx.lineWidth = 2;
+    ctx.strokeRect(Math.round(t.x - half) - 1, Math.round(t.y - half) - 1, CFG.size + 2, CFG.size + 2);
+    ctx.fillStyle = 'rgba(255,255,255,' + (0.18 * p).toFixed(3) + ')';
+    ctx.fillRect(Math.round(t.x - half), Math.round(t.y - half), CFG.size, CFG.size);
+  }
+}
+
+function drawCrosshair(){
+  if (!pointer.seen) return;
+  const x = Math.round(pointer.x), y = Math.round(pointer.y);
+  ctx.strokeStyle = '#38d6e8';
+  ctx.lineWidth = 2;
+  ctx.beginPath();
+  ctx.moveTo(x - 13, y); ctx.lineTo(x - 4, y);
+  ctx.moveTo(x + 4, y);  ctx.lineTo(x + 13, y);
+  ctx.moveTo(x, y - 13); ctx.lineTo(x, y - 4);
+  ctx.moveTo(x, y + 4);  ctx.lineTo(x, y + 13);
+  ctx.stroke();
+  ctx.fillStyle = '#38d6e8';
+  ctx.fillRect(x - 1, y - 1, 2, 2);
+}
+
+function draw(now){
+  const calibMode = (mode === 'calib');
+
+  if (calibMode){
+    // Pure black behind a pure white dot: the one signal that survives any
+    // white balance, any exposure, any amount of JPEG.
+    ctx.fillStyle = '#000000';
+    ctx.fillRect(0, 0, W, H);
+    const c = round.calib;
+    if (c && c.idx >= 0 && !c.done){
+      const p = c.pts[c.idx];
+      if (now < p.t1){
+        ctx.fillStyle = '#ffffff';
+        ctx.beginPath();
+        ctx.arc(p.x, p.y, 22, 0, Math.PI*2);
+        ctx.fill();
+      }
+      const remain = Math.max(0, p.t1 - now) / c.hold;
+      ctx.fillStyle = '#2a2f36';
+      ctx.textAlign = 'center';
+      ctx.font = '14px ui-monospace, monospace';
+      ctx.fillText(String(p.i + 1) + ' / ' + c.pts.length, p.x, p.y + 58);
+      ctx.fillRect(p.x - 60, p.y + 74, 120 * remain, 3);
+      ctx.textAlign = 'left';
+    } else if (c && c.done){
+      ctx.fillStyle = '#e6e9ec';
+      ctx.textAlign = 'center';
+      ctx.font = '16px ui-monospace, monospace';
+      ctx.fillText('calibracao concluida — pressione e para exportar o JSON', W/2, H/2);
+      ctx.textAlign = 'left';
+    }
+    return;
+  }
+
+  ctx.fillStyle = '#111418';
+  ctx.fillRect(0, 0, W, H);
+
+  if (mode === 'chase'){
+    const cx = W/2, cy = H/2, r = Math.min(W,H)*0.30;
+    ctx.strokeStyle = '#1b2026';
+    ctx.lineWidth = 1;
+    ctx.beginPath();
+    ctx.arc(cx, cy, r, 0, Math.PI*2);
+    ctx.stroke();
+    if (chase.dot){
+      ctx.fillStyle = CFG.color;
+      ctx.beginPath();
+      ctx.arc(chase.dot.x, chase.dot.y, CFG.size/2, 0, Math.PI*2);
+      ctx.fill();
+    }
+  } else {
+    for (const t of targets) drawCube(t, now);
+  }
+
+  drawCrosshair();
+}
+
+/* ---------- hud ---------- */
+
+function fmt(v, digits){
+  return v === null || v === undefined ? '—' : v.toFixed(digits === undefined ? 0 : digits);
+}
+
+function p95(list){
+  if (!list.length) return null;
+  const s = [...list].sort((a,b) => a-b);
+  return s[Math.min(s.length-1, Math.floor(s.length*0.95))];
+}
+
+let hudText = null;
+function setHud(text){
+  if (text === hudText) return;   // no DOM write 60x/s for identical text
+  hudText = text;
+  if (!text){ hud.textContent = ''; return; }
+  hud.innerHTML = text;
+}
+
+function updateHud(now){
+  if (mode === 'calib'){ setHud(''); return; }
+  if (now - lastHud < 100) return;
+  lastHud = now;
+
+  const avg = reactions.length ? reactions.reduce((a,b)=>a+b,0)/reactions.length : null;
+  const dist = hitDistances.length
+    ? hitDistances.reduce((a,b)=>a+b,0)/hitDistances.length : null;
+  const relx = W ? pointer.x / W : 0;
+  const rely = H ? pointer.y / H : 0;
+
+  let text =
+    'mode   <b>' + mode.padEnd(9) + '</b>   ' + CFG.size + 'px / dwell ' + CFG.dwell + 'ms\n' +
+    'hits   <b>' + String(hits).padStart(3) + '</b> / ' + spawns + ' spawns\n' +
+    'react  <b>' + fmt(avg) + '</b> ms   p95 ' + fmt(p95(reactions)) + ' ms\n' +
+    'dist   <b>' + fmt(dist, 1) + '</b> px do centro no acerto\n' +
+    'fps    ' + fps.toFixed(0) + '   dpr ' + DPR + '   ' + W + 'x' + H + '\n' +
+    'ptr    ' + Math.round(pointer.x) + ',' + Math.round(pointer.y) +
+      '   rel ' + relx.toFixed(3) + ',' + rely.toFixed(3);
+
+  if (mode === 'chase'){
+    text += '\nlat    <b>' + fmt(chase.lat) + '</b> ms no loop inteiro' +
+            '   (' + chase.samples + ' amostras)';
+  }
+
+  setHud(text);
+}
+
+/* ---------- export ---------- */
+
+function exportJSON(){
+  const calibPts = round.calib
+    ? round.calib.pts.filter(p => p.tw0 > 0).map(p => ({ i:p.i, x:p.x, y:p.y, tw0:p.tw0, tw1:p.tw1 }))
+    : null;
+
+  const payload = {
+    app: 'j5-aim-trainer',
+    version: 1,
+    mode,
+    cfg: CFG,
+    dpr: DPR,
+    viewport: { w:W, h:H },
+    hits, spawns,
+    reactions_ms: reactions,
+    hit_distance_px: hitDistances,
+    reaction_avg_ms: reactions.length ? reactions.reduce((a,b)=>a+b,0)/reactions.length : null,
+    reaction_p95_ms: p95(reactions),
+    latency_ms: chase.lat,
+    latency_samples: chase.samples,
+    calibration: calibPts,
+    exported_at: Date.now()
+  };
+
+  const blob = new Blob([JSON.stringify(payload, null, 2)], { type:'application/json' });
+  const a = document.createElement('a');
+  a.href = URL.createObjectURL(blob);
+  a.download = 'j5-trainer-' + mode + '-' + new Date().toISOString().replace(/[:.]/g,'-') + '.json';
+  document.body.appendChild(a);
+  a.click();
+  setTimeout(() => { URL.revokeObjectURL(a.href); a.remove(); }, 1000);
+}
+
+/* ---------- loop ---------- */
+
+function frame(now){
+  const dt = Math.min(100, Math.max(0, now - lastFrameAt));
+  lastFrameAt = now;
+  frames++;
+
+  if (mode === 'chase') updateChase(now);
+  else if (mode === 'calib') updateCalib(now);
+  else stepTargets(now, dt);
+
+  draw(now);
+  updateHud(now);
+
+  if (now - fpsAt > 500){
+    fps = frames * 1000 / (now - fpsAt);
+    frames = 0; fpsAt = now;
+  }
+
+  requestAnimationFrame(frame);
+}
+
+/* ---------- input ---------- */
+
+addEventListener('mousemove', e => {
+  pointer.x = e.clientX; pointer.y = e.clientY; pointer.seen = true;
+}, { passive:true });
+
+addEventListener('mousedown', e => { pointer.x = e.clientX; pointer.y = e.clientY; pointer.seen = true; });
+
+addEventListener('keydown', e => {
+  const k = e.key;
+  if (k >= '1' && k <= '5'){
+    mode = MODES[parseInt(k,10) - 1];
+    resetRound();
+    if (mode !== 'calib') setHud('');
+  } else if (k === 'r' || k === 'R'){
+    resetStats(); resetRound();
+  } else if (k === 'e' || k === 'E'){
+    exportJSON();
+  } else if (k === 'f' || k === 'F'){
+    if (document.fullscreenElement) document.exitFullscreen();
+    else document.documentElement.requestFullscreen().catch(() => {});
+  }
+});
+
+addEventListener('contextmenu', e => e.preventDefault());
+addEventListener('resize', resize);
+
+resize();
+requestAnimationFrame(frame);
+
+})();
+</script>
+</body>
+</html>

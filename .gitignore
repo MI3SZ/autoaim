@@ -1,0 +1,7 @@
+__pycache__/
+*.pyc
+# artefatos que o uso normal gera, não fazem parte do projeto
+calib.json
+color.json
+rec/
+rec-*/

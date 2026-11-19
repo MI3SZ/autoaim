@@ -1,0 +1,40 @@
+#!/sbin/openrc-run
+# The pmOS initramfs rebuilds the g1 gadget on every boot with CDC-NCM only, so
+# the HID function has to be re-added after the USB stack is up. gadget.sh add is
+# idempotent, which is why this can just run unconditionally.
+#
+#   install -m 755 j5-hid.initd /etc/init.d/j5-hid
+#   rc-update add j5-hid default
+
+description="Adds the HID absolute mouse function to the pmOS USB gadget"
+
+# Where deploy.sh put the files. Override in /etc/conf.d/j5-hid if you deployed
+# somewhere other than /opt/j5.
+: "${J5_DIR:=/opt/j5}"
+
+depend() {
+    need localmount
+    after usb
+    before sshd
+}
+
+start() {
+    ebegin "j5-hid: adicionando mouse HID ao gadget"
+    "$J5_DIR/gadget.sh" add >/dev/null 2>&1
+    eend $?
+}
+
+stop() {
+    ebegin "j5-hid: removendo mouse HID do gadget"
+    "$J5_DIR/gadget.sh" del >/dev/null 2>&1
+    eend $?
+}
+
+status() {
+    if [ -e /dev/hidg0 ]; then
+        einfo "j5-hid: /dev/hidg0 presente"
+        return 0
+    fi
+    einfo "j5-hid: /dev/hidg0 ausente"
+    return 1
+}
