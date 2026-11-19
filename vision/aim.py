@@ -316,8 +316,10 @@ def main(argv=None) -> int:
     parser.add_argument("--gain", type=float, default=0.25,
                         help="fracao do erro por frame; acima de ~0.3 bate lata com a latencia")
     parser.add_argument("--deadband", type=float, default=30.0, help="unidades de tela (~2px)")
-    parser.add_argument("--max-step", type=float, default=300.0,
-                        help="contagens maximas por frame; segura o tranco inicial")
+    parser.add_argument("--max-step", type=float, default=0.0,
+                        help="teto em contagens por frame (0 = calcula pela velocidade alvo)")
+    parser.add_argument("--max-px-frame", type=float, default=40.0,
+                        help="velocidade alvo do cursor, em px por frame")
     parser.add_argument("--duration", type=float, default=0.0)
     parser.add_argument("--preview", action="store_true")
     parser.add_argument("--cursor-source", choices=("auto", "http", "vision"), default="auto",
@@ -351,7 +353,7 @@ def main(argv=None) -> int:
     cap.set(cv2.CAP_PROP_FRAME_WIDTH, args.width)
     cap.set(cv2.CAP_PROP_FRAME_HEIGHT, args.height)
 
-    servo = Servo(args.gain, args.deadband, args.max_step)
+    servo = Servo(args.gain, args.deadband, args.max_step or 300.0)
     sender = Sender(args.host, args.port)
     cursor_server = None
     if args.cursor_source in ("auto", "http"):
@@ -371,9 +373,15 @@ def main(argv=None) -> int:
         if measured:
             servo.k = measured
             servo.adapt = False   # calibrado vale mais que a estimativa do laco
+            px_per_count = measured / (protocol.MAX_COORD / args.width)
             print(f"calibrado: {measured:.2f} unidades de tela por contagem "
-                  f"({measured / (protocol.MAX_COORD / args.width):.2f} px por contagem)",
-                  file=sys.stderr)
+                  f"({px_per_count:.2f} px por contagem)", file=sys.stderr)
+            if not args.max_step:
+                # O atuador drena 127 contagens por tick a 125 Hz: sem teto em
+                # pixels ele faz 19 telas por segundo e o laco nunca acompanha.
+                servo.max_step = max(1.0, args.max_px_frame / max(0.01, px_per_count))
+                print(f"teto de velocidade: {args.max_px_frame:.0f} px/frame "
+                      f"= {servo.max_step:.0f} contagens", file=sys.stderr)
         else:
             print("calibracao falhou (cursor nao respondeu); usando estimativa do laco",
                   file=sys.stderr)
