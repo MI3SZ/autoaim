@@ -747,6 +747,23 @@ def _():
         assert abs(ky - ky_true) / ky_true < 0.05, f"ky real {ky_true}, medido {ky}"
 
 
+@check("doctor: conversao de unidades e relatorio")
+def _():
+    sys.path.insert(0, os.path.join(ROOT, "vision"))
+    import doctor
+
+    units = doctor.to_units((960, 540), 1920, 1080)
+    back = doctor.from_units(units, 1920, 1080)
+    assert abs(back[0] - 960) < 1 and abs(back[1] - 540) < 1, back
+
+    report = doctor.Report()
+    report.ok("um")
+    report.fail("dois")
+    report.warn("tres")
+    assert len(report.failures()) == 1 and len(report.warnings()) == 1
+    assert report.failures()[0][1] == "dois"
+
+
 @check("aim: acha a bola branca do cursor e nao o alvo")
 def _():
     import cv2
