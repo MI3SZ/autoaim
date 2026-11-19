@@ -230,9 +230,20 @@ function drawCube(t, now){
   }
 }
 
+// O cursor e desenhado grande e branco de proposito: o aim.py precisa ACHAR o
+// ponteiro dentro do frame capturado. Cruz de 2px se confundia com qualquer
+// objeto ciano da tela; uma bola branca de 36px com contorno preto nao.
 function drawCrosshair(){
   if (!pointer.seen) return;
   const x = Math.round(pointer.x), y = Math.round(pointer.y);
+  ctx.beginPath();
+  ctx.arc(x, y, 17, 0, Math.PI * 2);
+  ctx.fillStyle = '#ffffff';
+  ctx.fill();
+  ctx.lineWidth = 3;
+  ctx.strokeStyle = '#000000';
+  ctx.stroke();
+
   ctx.strokeStyle = '#38d6e8';
   ctx.lineWidth = 2;
   ctx.beginPath();

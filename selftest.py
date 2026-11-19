@@ -747,6 +747,27 @@ def _():
         assert abs(ky - ky_true) / ky_true < 0.05, f"ky real {ky_true}, medido {ky}"
 
 
+@check("aim: acha a bola branca do cursor e nao o alvo")
+def _():
+    import cv2
+    sys.path.insert(0, os.path.join(ROOT, "vision"))
+    import aim
+
+    img = np.full((1080, 1920, 3), 17, np.uint8)
+    img[500:560, 400:460] = TARGET_BGR
+    cv2.circle(img, (1200, 400), 17, (255, 255, 255), -1)
+    cv2.circle(img, (1200, 400), 17, (0, 0, 0), 3)
+
+    cursor = aim.Finder(aim.hex_to_bgr("ffffff"), tol=22, l_tol=70, min_area=400,
+                        downsample=1, open_size=3, close_size=5, blur=0, reject_bands=False)
+    found = cursor.find(img)
+    assert found is not None, "bola do cursor nao achada"
+    assert abs(found[0] - 1200) < 3 and abs(found[1] - 400) < 3, found
+
+    target = aim.Finder(aim.hex_to_bgr("d000d0"), tol=30, l_tol=48, min_area=40, downsample=2)
+    assert target.find(img) is not None, "alvo perdido com a bola na cena"
+
+
 @check("aim: escolhe a cruz e nao a isca ciana da cena")
 def _():
     sys.path.insert(0, os.path.join(ROOT, "vision"))

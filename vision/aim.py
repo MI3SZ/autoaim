@@ -36,7 +36,10 @@ sys.path.insert(0, os.path.dirname(_HERE))
 import protocol  # noqa: E402
 
 TARGET_HEX = "d000d0"
-CURSOR_HEX = "38d6e8"  # a cruz que o trainer desenha no lugar do cursor
+# A bola branca que o trainer desenha no lugar do cursor: 36 px, contorno preto.
+# E o marcador mais facil de achar num frame capturado - alto L, croma neutro e
+# area grande -, e nao se confunde com o alvo magenta nem com a UI.
+CURSOR_HEX = "ffffff"
 
 
 def hex_to_bgr(text: str) -> tuple[int, int, int]:
@@ -376,8 +379,8 @@ def main(argv=None) -> int:
                         help="velocidade alvo do cursor, em px por frame")
     parser.add_argument("--duration", type=float, default=0.0)
     parser.add_argument("--preview", action="store_true")
-    parser.add_argument("--cursor-source", choices=("auto", "http", "vision"), default="auto",
-                        help="http = posicao publicada pelo trainer; vision = cruz ciana")
+    parser.add_argument("--cursor-source", choices=("auto", "http", "vision"), default="vision",
+                        help="vision = bola branca do trainer no frame; http = posicao publicada")
     parser.add_argument("--cursor-port", type=int, default=8765)
     parser.add_argument("--stats-ms", type=int, default=250,
                         help="intervalo das linhas de estatistica (1s esconde a convergencia)")
@@ -390,8 +393,10 @@ def main(argv=None) -> int:
     fy = 1.0 / (protocol.MAX_COORD / args.height)
 
     target_finder = Finder(hex_to_bgr(args.color), tol=30, l_tol=48, min_area=40, downsample=2)
-    cursor_finder = Finder(hex_to_bgr(args.cursor_color), tol=45, l_tol=85, min_area=12,
-                           downsample=1, open_size=0, close_size=7, blur=0, reject_bands=False)
+    # Bola branca: croma quase nulo (tol apertado), L alto (l_tol largo) e area
+    # de centenas de pixels. Abertura 3x3 nao apaga porque a bola e gorda.
+    cursor_finder = Finder(hex_to_bgr(args.cursor_color), tol=22, l_tol=70, min_area=400,
+                           downsample=1, open_size=3, close_size=5, blur=0, reject_bands=False)
 
     def current_cursor():
         """Posicao do cursor em unidades de tela, da fonte que estiver ativa."""
