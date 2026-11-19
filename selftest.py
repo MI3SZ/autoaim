@@ -764,12 +764,12 @@ def _():
     sys.path.insert(0, os.path.join(ROOT, "vision"))
     import aim
 
-    servo = aim.Servo(0.55, 8.0, 2500)
+    servo = aim.Servo(0.55, 30.0, 2500)
     servo.update((20000, 20000), (10000, 10000))
-    before = servo.k
+    before = (servo.kx, servo.ky)
     # cursor "anda" para o lado contrario do que foi pedido: deteccao furada
     servo.update((20000, 20000), (10000 - 900, 10000))
-    assert servo.k == before, f"k mudou com movimento incoerente: {before} -> {servo.k}"
+    assert (servo.kx, servo.ky) == before, f"k mudou com movimento incoerente: {before}"
 
 
 @check("aim.py: o parser expoe todas as flags que o codigo usa")
