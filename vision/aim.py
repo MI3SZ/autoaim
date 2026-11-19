@@ -21,7 +21,10 @@ import math
 import os
 import socket
 import sys
+import threading
 import time
+from http.server import BaseHTTPRequestHandler, HTTPServer
+from urllib.parse import parse_qs, urlparse
 
 import cv2
 import numpy as np
@@ -130,6 +133,62 @@ def pick_cursor(candidates, previous, max_jump=260.0, area_range=(25, 4000)):
     return min(near, key=lambda c: math.hypot(c[0] - previous[0], c[1] - previous[1]))
 
 
+class CursorServer:
+    """Escuta a posicao do ponteiro que o trainer.html publica.
+
+    Deduzir o cursor de um blob ciano na tela e fragil por natureza: qualquer
+    objeto azulado vira candidato e, quando a cruz some (cursor fora da janela),
+    o laco continua empurrando as cegas - foi assim que o cursor foi parar no
+    canto e nao saiu. Aqui a posicao vem de quem sabe: a pagina que recebe o
+    evento de ponteiro. O alvo continua sendo detectado por visao.
+    """
+
+    def __init__(self, port: int = 8765):
+        self.port = port
+        self._lock = threading.Lock()
+        self._pos = None
+        self._ts = 0.0
+        server = self
+
+        class Handler(BaseHTTPRequestHandler):
+            def do_GET(self):
+                parsed = urlparse(self.path)
+                if parsed.path != "/pos":
+                    self.send_error(404)
+                    return
+                query = parse_qs(parsed.query)
+                try:
+                    x = float(query["x"][0])
+                    y = float(query["y"][0])
+                    w = float(query["w"][0])
+                    h = float(query["h"][0])
+                    d = float(query["d"][0])
+                except (KeyError, IndexError, ValueError):
+                    self.send_error(400)
+                    return
+                with server._lock:
+                    server._pos = (x, y, w, h, d)
+                    server._ts = time.monotonic()
+                self.send_response(204)
+                self.end_headers()
+
+            def log_message(self, *args):
+                pass
+
+        self._httpd = HTTPServer(("127.0.0.1", port), Handler)
+        self._thread = threading.Thread(target=self._httpd.serve_forever, daemon=True)
+        self._thread.start()
+
+    def latest(self, max_age: float = 0.30):
+        with self._lock:
+            if self._pos is None or time.monotonic() - self._ts > max_age:
+                return None
+            return self._pos
+
+    def close(self) -> None:
+        self._httpd.shutdown()
+
+
 class Servo:
     """Controle proporcional em contagens de mouse, sobre erro medido.
 
@@ -216,6 +275,9 @@ def main(argv=None) -> int:
                         help="contagens maximas por frame (o atuador drena ~127 a 125Hz)")
     parser.add_argument("--duration", type=float, default=0.0)
     parser.add_argument("--preview", action="store_true")
+    parser.add_argument("--cursor-source", choices=("auto", "http", "vision"), default="auto",
+                        help="http = posicao publicada pelo trainer; vision = cruz ciana")
+    parser.add_argument("--cursor-port", type=int, default=8765)
     args = parser.parse_args(argv)
 
     target_finder = Finder(hex_to_bgr(args.color), tol=30, l_tol=48, min_area=40, downsample=2)
@@ -232,6 +294,15 @@ def main(argv=None) -> int:
 
     servo = Servo(args.gain, args.deadband, args.max_step)
     sender = Sender(args.host, args.port)
+    cursor_server = None
+    if args.cursor_source in ("auto", "http"):
+        try:
+            cursor_server = CursorServer(args.cursor_port)
+            print(f"cursor: esperando o trainer em http://127.0.0.1:{args.cursor_port}/pos",
+                  file=sys.stderr)
+        except OSError as exc:
+            print(f"cursor: porta {args.cursor_port} indisponivel ({exc}); usando visao",
+                  file=sys.stderr)
     rect = (0, 0, args.width, args.height)
 
     period = 1.0 / args.hz
@@ -257,7 +328,19 @@ def main(argv=None) -> int:
             frames += 1
 
             target = target_finder.find(image)
-            cursor = pick_cursor(cursor_finder.candidates(image), last_cursor)
+
+            cursor = None
+            if cursor_server is not None:
+                published = cursor_server.latest()
+                if published is not None:
+                    px, py, vw, vh, dpr = published
+                    if vw > 0 and vh > 0:
+                        # viewport em px de CSS -> px de tela (tela cheia, 0,0)
+                        cursor = protocol.to_abs(px * dpr * args.width / (vw * dpr),
+                                                 py * dpr * args.height / (vh * dpr),
+                                                 rect)
+            if cursor is None and args.cursor_source != "http":
+                cursor = pick_cursor(cursor_finder.candidates(image), last_cursor)
             if cursor is not None:
                 last_cursor = cursor
             if target is not None:
@@ -265,7 +348,7 @@ def main(argv=None) -> int:
             if cursor is not None:
                 cursor = protocol.to_abs(cursor[0], cursor[1], rect)
 
-            if cursor is None and last_cursor is not None:
+            if cursor is None and last_cursor is not None and args.cursor_source != "http":
                 lost += 1
                 if lost == 45:
                     print("aviso: perdi a cruz ha 45 frames. Ela so existe onde o "
@@ -326,6 +409,8 @@ def main(argv=None) -> int:
     except KeyboardInterrupt:
         pass
     finally:
+        if cursor_server is not None:
+            cursor_server.close()
         cap.release()
         if args.preview:
             cv2.destroyAllWindows()

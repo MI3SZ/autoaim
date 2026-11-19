@@ -702,6 +702,23 @@ def _():
     assert sum(((r[1] + 128) % 256) - 128 for r in reports) > 0, "nao andou em x"
 
 
+@check("aim: recebe a posicao publicada pelo trainer")
+def _():
+    sys.path.insert(0, os.path.join(ROOT, "vision"))
+    import urllib.request
+    import aim
+
+    server = aim.CursorServer(8791)
+    try:
+        assert server.latest() is None
+        urllib.request.urlopen("http://127.0.0.1:8791/pos?x=800&y=450&w=1920&h=1080&d=1").read()
+        published = server.latest()
+        assert published == (800.0, 450.0, 1920.0, 1080.0, 1.0), published
+        assert protocol.to_abs(published[0], published[1], (0, 0, 1920, 1080))[0] == 13653
+    finally:
+        server.close()
+
+
 @check("aim: escolhe a cruz e nao a isca ciana da cena")
 def _():
     sys.path.insert(0, os.path.join(ROOT, "vision"))

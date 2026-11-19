@@ -408,11 +408,31 @@ function frame(now){
 
 /* ---------- input ---------- */
 
+// Publica a posicao do ponteiro para o aim.py (127.0.0.1:8765).
+// O trainer e a unica fonte que sabe EXATAMENTE onde o cursor esta: deduzir isso
+// de um blob ciano na tela funcionou mal, porque qualquer objeto azulado vira
+// candidato. O alvo continua sendo detectado por visao - so a posicao do cursor
+// vem daqui, que e medida, nao adivinhada.
+let lastPublish = 0;
+function publishPointer(){
+  const now = performance.now();
+  if (now - lastPublish < 16) return;
+  lastPublish = now;
+  const url = 'http://127.0.0.1:8765/pos?x=' + (pointer.x | 0) +
+              '&y=' + (pointer.y | 0) +
+              '&w=' + W + '&h=' + H + '&d=' + DPR;
+  fetch(url, { mode:'no-cors', cache:'no-store' }).catch(() => {});
+}
+
 addEventListener('mousemove', e => {
   pointer.x = e.clientX; pointer.y = e.clientY; pointer.seen = true;
+  publishPointer();
 }, { passive:true });
 
-addEventListener('mousedown', e => { pointer.x = e.clientX; pointer.y = e.clientY; pointer.seen = true; });
+addEventListener('mousedown', e => {
+  pointer.x = e.clientX; pointer.y = e.clientY; pointer.seen = true;
+  publishPointer();
+});
 
 addEventListener('keydown', e => {
   const k = e.key;
