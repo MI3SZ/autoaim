@@ -104,6 +104,7 @@ class Actuator:
         self.fy = OneEuro(args.min_cutoff, args.beta)
 
         self.target: Optional[tuple[float, float]] = None
+        self.pending: Optional[list[int]] = None
         self.sent = (protocol.MAX_COORD // 2, protocol.MAX_COORD // 2)
         self.primed = False
         self.last_frame_at = 0.0
@@ -209,20 +210,37 @@ class Actuator:
         self.primed = True
 
     def _apply_delta(self, dx: int, dy: int) -> None:
-        """Escreve o deslocamento pedido, fatiado no tamanho do report."""
-        step_x, step_y = int(dx), int(dy)
-        for _ in range(64):
-            if not step_x and not step_y:
-                return
-            chunk_x = max(-127, min(127, step_x))
-            chunk_y = max(-127, min(127, step_y))
-            if not self._write(protocol.hid_rel(chunk_x, chunk_y)):
-                return
-            step_x -= chunk_x
-            step_y -= chunk_y
-            cx = max(0, min(protocol.MAX_COORD, self.sent[0] + chunk_x))
-            cy = max(0, min(protocol.MAX_COORD, self.sent[1] + chunk_y))
-            self.sent = (cx, cy)
+        """Acumula o deslocamento; quem escreve e o tick, um report por vez.
+
+        Escrever 20 reports de uma vez enche a fila do endpoint e o kernel
+        recusa o resto com EAGAIN - na pratica o passo virava 127 em vez dos
+        2500 pedidos, e cada frame perdia 19 reports. Drenando no ritmo do laco
+        (125 Hz) sai 15875 unidades por segundo sem descarte nenhum.
+        """
+        if self.pending is None:
+            self.pending = [0, 0]
+        # Backlog limitado: se o host parar de consumir, nao acumula um tranco
+        # enorme para depois.
+        self.pending[0] = max(-800, min(800, self.pending[0] + int(dx)))
+        self.pending[1] = max(-800, min(800, self.pending[1] + int(dy)))
+
+    def _drain(self) -> None:
+        if not self.pending:
+            return
+        chunk_x = max(-127, min(127, self.pending[0]))
+        chunk_y = max(-127, min(127, self.pending[1]))
+        if chunk_x == 0 and chunk_y == 0:
+            self.pending = None
+            return
+        if not self._write(protocol.hid_rel(chunk_x, chunk_y)):
+            return  # tenta de novo no proximo tick, sem perder o que falta
+        self.pending[0] -= chunk_x
+        self.pending[1] -= chunk_y
+        if not self.pending[0] and not self.pending[1]:
+            self.pending = None
+        cx = max(0, min(protocol.MAX_COORD, self.sent[0] + chunk_x))
+        cy = max(0, min(protocol.MAX_COORD, self.sent[1] + chunk_y))
+        self.sent = (cx, cy)
 
     def _send_rel(self, tx: float, ty: float) -> None:
         cx, cy = self.sent
@@ -247,27 +265,30 @@ class Actuator:
             step_y -= dy
 
     def home(self) -> None:
-        """Anchor the position model by walking the pointer into the top-left.
+        """Leva o ponteiro ao canto inferior direito e assume o modelo ali.
 
-        A relative device cannot know where the cursor is, and starting from a
-        guess leaves a constant offset for the whole session. Writing a large
-        negative delta until the OS clamps at (0,0) is the only way to find out.
-        Costs about a second, once.
+        O canto superior esquerdo e o hot corner do GNOME: ancorar la abre a
+        visao de atividades e a tela capturada deixa de ser a que interessa.
+        O inferior direito e canto morto em qualquer desktop.
         """
         written = 0
         for _ in range(self.args.rel_home):
-            if not self._write(protocol.hid_rel(-127, -127)):
+            if not self._write(protocol.hid_rel(127, 127)):
                 time.sleep(0.002)
-                if not self._write(protocol.hid_rel(-127, -127)):
+                if not self._write(protocol.hid_rel(127, 127)):
                     break
             written += 1
             time.sleep(0.001)
-        self.sent = (0, 0)
-        print(f"ancorado no canto superior esquerdo ({written} reports)", file=sys.stderr)
+        self.sent = (protocol.MAX_COORD, protocol.MAX_COORD)
+        print(f"ancorado no canto inferior direito ({written} reports)", file=sys.stderr)
 
     def tick(self, now: float) -> None:
         dt = now - self.last_tick if self.last_tick else 1.0 / max(1, self.args.hz)
         self.last_tick = now
+
+        if self.pending is not None:
+            self._drain()
+            return
 
         if self.target is None or (now - self.last_frame_at) > self.watchdog:
             self.fx.reset()

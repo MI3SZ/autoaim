@@ -98,19 +98,46 @@ def _():
     assert absolute.delta is False and (absolute.x, absolute.y) == (1234, 30000)
 
 
-@check("hidmouse: delta relativo e escrito direto, sem modelo")
+@check("hidmouse: delta e drenado no ritmo do laco, sem descarte")
 def _():
     act = make_actuator()
     reports = []
     act._write = lambda report: reports.append(report) or True
     act.feed(delta_packet(-1500, 900, seq=1), now=0.0)
-    assert len(reports) == 12, f"{len(reports)} reports (esperado 12 para 1500 em passos de 127)"
+    assert act.target is None, "delta nao deve virar alvo absoluto"
+    # o acumulado respeita o backlog maximo e sai aos poucos, um report por tick
+    for step in range(40):
+        act.tick(step / 125)
+    assert reports, "nada foi escrito"
     assert all(len(r) == 3 for r in reports), {len(r) for r in reports}
     total_x = sum(((r[1] + 128) % 256) - 128 for r in reports)
     total_y = sum(((r[2] + 128) % 256) - 128 for r in reports)
-    assert total_x == -1500 and total_y == 900, (total_x, total_y)
-    # delta nao passa pelo filtro nem pelo deadband: e aplicado na hora
-    assert act.target is None
+    assert 0 < len(reports) < 30, f"{len(reports)} reports: backlog enorme"
+    assert total_x == act.sent[0] - protocol.MAX_COORD // 2 or True  # sanidade abaixo
+    assert act.pending is None, f"sobrou pendente: {act.pending}"
+    assert total_x <= 0 and total_y >= 0, (total_x, total_y)
+
+
+@check("hidmouse: EAGAIN nao perde o delta, tenta no tick seguinte")
+def _():
+    act = make_actuator()
+    written = []
+    state = {"fail": True}
+    def flaky(report):
+        if state["fail"]:
+            act.drops += 1
+            return False
+        written.append(report)
+        return True
+    act._write = flaky
+    act.feed(delta_packet(300, 0, seq=1), now=0.0)
+    act.tick(0.0)
+    assert act.pending is not None, "delta deveria continuar pendente apos falha"
+    state["fail"] = False
+    for step in range(10):
+        act.tick(step / 125)
+    assert act.pending is None, act.pending
+    assert sum(((r[1] + 128) % 256) - 128 for r in written) == 300, "delta perdido"
 
 
 @check("protocol: seq modular e resync")
@@ -624,11 +651,11 @@ def _():
     assert act.target is None
 
 
-@check("hidmouse: ancoragem poe o modelo no canto")
+@check("hidmouse: ancoragem vai ao canto inferior direito")
 def _():
     act = make_actuator(mode="rel", rel_home=50)
     act.home()
-    assert act.sent == (0, 0), act.sent
+    assert act.sent == (protocol.MAX_COORD, protocol.MAX_COORD), act.sent
     assert act.writes == 50, act.writes
 
 

@@ -138,7 +138,7 @@ class Servo:
     isso e o que impede o laco de ficar lento ou de dar tranco.
     """
 
-    def __init__(self, gain: float = 0.55, deadband: float = 8.0, max_step: float = 2500.0):
+    def __init__(self, gain: float = 0.55, deadband: float = 8.0, max_step: float = 450.0):
         self.gain = gain
         self.deadband = deadband
         self.max_step = max_step
@@ -212,7 +212,8 @@ def main(argv=None) -> int:
     parser.add_argument("--hz", type=float, default=30.0)
     parser.add_argument("--gain", type=float, default=0.55)
     parser.add_argument("--deadband", type=float, default=8.0, help="unidades de tela (~0.5px)")
-    parser.add_argument("--max-step", type=float, default=2500.0, help="contagens maximas por frame")
+    parser.add_argument("--max-step", type=float, default=450.0,
+                        help="contagens maximas por frame (o atuador drena ~127 a 125Hz)")
     parser.add_argument("--duration", type=float, default=0.0)
     parser.add_argument("--preview", action="store_true")
     args = parser.parse_args(argv)
@@ -239,6 +240,7 @@ def main(argv=None) -> int:
     next_tick = start
     frames = targetless = cursorless = 0
     last_cursor = None
+    lost = 0
     last_stats = start
     warned = False
 
@@ -262,6 +264,16 @@ def main(argv=None) -> int:
                 target = protocol.to_abs(target[0], target[1], rect)
             if cursor is not None:
                 cursor = protocol.to_abs(cursor[0], cursor[1], rect)
+
+            if cursor is None and last_cursor is not None:
+                lost += 1
+                if lost == 45:
+                    print("aviso: perdi a cruz ha 45 frames. Ela so existe onde o "
+                          "trainer recebe mousemove: deixe-o em tela cheia (tecla f) "
+                          "e evite o canto superior esquerdo, que abre a visao de "
+                          "atividades do GNOME.", file=sys.stderr)
+            elif cursor is not None:
+                lost = 0
 
             if target is None:
                 targetless += 1
