@@ -243,6 +243,53 @@ class Servo:
         return step
 
 
+def probe_axes(sender, measure, hz: float = 30.0, step: int = 120, log=print):
+    """Mede cada eixo, cada sentido, separadamente.
+
+    Serve para descobrir duas coisas que confundem tudo de uma vez: se um eixo
+    responde pouco (fica preso na borda) e se o sentido e o esperado. Foi
+    escrito depois de ver o eixo Y imovel com comando negativo e se mover com
+    comando positivo, o que nao fecha com nenhuma outra explicacao.
+    """
+    position = None
+    for _ in range(90):
+        position = measure()
+        if position:
+            break
+        time.sleep(1.0 / hz)
+    if not position:
+        log("sem posicao publicada; nao da para medir")
+        return None
+
+    results = {}
+    for axis, name in ((0, "x"), (1, "y")):
+        for sign in (-1, +1):
+            before = measure() or position
+            # se estiver colado na borda nesse sentido, o teste nao vale
+            at_edge = (before[axis] < step * 2 and sign < 0) or \
+                      (before[axis] > protocol.MAX_COORD - step * 2 and sign > 0)
+            delta = [0, 0]
+            delta[axis] = sign * step
+            sender.delta(*delta)
+            after = before
+            for _ in range(3):
+                time.sleep(2.0 / hz)
+                fetched = measure()
+                if fetched:
+                    after = fetched
+            moved = after[axis] - before[axis]
+            key = f"{name}{'+' if sign > 0 else '-'}"
+            results[key] = (moved, at_edge)
+            log(f"  {key}: mandei {sign*step:+4d} contagens -> moveu {moved:+7.0f} unidades"
+                + ("   [colado na borda, teste invalido]" if at_edge else ""))
+            # volta ao ponto de partida para o proximo teste
+            back = [0, 0]
+            back[axis] = -sign * step
+            sender.delta(*back)
+            time.sleep(6.0 / hz)
+    return results
+
+
 def calibrate_k(sender, measure, hz: float = 30.0, step: int = 150):
     """Mede quantas unidades de tela o cursor anda por contagem enviada.
 
@@ -325,6 +372,8 @@ def main(argv=None) -> int:
     parser.add_argument("--cursor-source", choices=("auto", "http", "vision"), default="auto",
                         help="http = posicao publicada pelo trainer; vision = cruz ciana")
     parser.add_argument("--cursor-port", type=int, default=8765)
+    parser.add_argument("--probe-axes", action="store_true",
+                        help="mede cada eixo e cada sentido, imprime e sai")
     parser.add_argument("--no-calibrate", action="store_true",
                         help="pula a medicao de k no inicio e usa a estimativa do laco")
     args = parser.parse_args(argv)
@@ -368,6 +417,15 @@ def main(argv=None) -> int:
     start = time.monotonic()
     deadline = start + args.duration if args.duration else None
     next_tick = start
+    if args.probe_axes:
+        if cursor_server is None:
+            print("--probe-axes precisa da fonte http (o trainer publicando)", file=sys.stderr)
+            return 1
+        print("sondando cada eixo (leva ~5s)...", file=sys.stderr)
+        probe_axes(sender, current_cursor, args.hz,
+                   log=lambda msg: print(msg, file=sys.stderr, flush=True))
+        return 0
+
     if not args.no_calibrate and cursor_server is not None:
         measured = calibrate_k(sender, current_cursor, args.hz)
         if measured:
