@@ -429,6 +429,11 @@ addEventListener('mousemove', e => {
   publishPointer();
 }, { passive:true });
 
+// Publica tambem periodicamente: com o cursor parado nao existe mousemove, e o
+// aim.py descarta posicao com mais de 300ms - o laco morria por falta de noticia,
+// nao por falta de movimento.
+setInterval(publishPointer, 100);
+
 addEventListener('mousedown', e => {
   pointer.x = e.clientX; pointer.y = e.clientY; pointer.seen = true;
   publishPointer();

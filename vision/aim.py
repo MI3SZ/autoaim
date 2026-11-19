@@ -220,7 +220,7 @@ class Servo:
             moved = cursor[0] - self._cursor_at_send[0]
             if abs(asked) >= 40 and moved * asked > 0:
                 observed = abs(moved / asked)
-                if 0.05 < observed < 20.0:
+                if 0.005 < observed < 50.0:
                     self.k += 0.25 * (observed - self.k)
 
         ex = target[0] - cursor[0]
@@ -231,7 +231,7 @@ class Servo:
             self._sent = None
             return None
 
-        scale = 1.0 / max(0.05, min(20.0, self.k))
+        scale = 1.0 / max(0.005, min(50.0, self.k))
         ux = max(-self.max_step, min(self.max_step, self.gain * ex * scale))
         uy = max(-self.max_step, min(self.max_step, self.gain * ey * scale))
         step = (int(round(ux)), int(round(uy)))
@@ -312,6 +312,7 @@ def main(argv=None) -> int:
     frames = targetless = cursorless = 0
     last_cursor = None
     lost = 0
+    viewport_checked = False
     last_stats = start
     warned = False
 
@@ -334,6 +335,15 @@ def main(argv=None) -> int:
                 published = cursor_server.latest()
                 if published is not None:
                     px, py, vw, vh, dpr = published
+                    if not viewport_checked:
+                        viewport_checked = True
+                        physical = (round(vw * dpr), round(vh * dpr))
+                        print(f"cursor: trainer publicando viewport {physical[0]}x{physical[1]} "
+                              f"(dpr {dpr})", file=sys.stderr)
+                        if physical != (args.width, args.height):
+                            print("aviso: o viewport nao cobre a tela. Aperte 'f' para "
+                                  "tela cheia - sem isso clientX/Y nao sao coordenadas de tela.",
+                                  file=sys.stderr)
                     if vw > 0 and vh > 0:
                         # viewport em px de CSS -> px de tela (tela cheia, 0,0)
                         cursor = protocol.to_abs(px * dpr * args.width / (vw * dpr),
@@ -348,7 +358,7 @@ def main(argv=None) -> int:
             if cursor is not None:
                 cursor = protocol.to_abs(cursor[0], cursor[1], rect)
 
-            if cursor is None and last_cursor is not None and args.cursor_source != "http":
+            if cursor is None and last_cursor is not None and args.cursor_source == "vision":
                 lost += 1
                 if lost == 45:
                     print("aviso: perdi a cruz ha 45 frames. Ela so existe onde o "
